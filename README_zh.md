@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.25+-green?logo=go&logoColor=white" alt="Go 1.25+">
   <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="License Apache-2.0"></a>
-  <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases"><img src="https://img.shields.io/badge/release-v1.1.0-red" alt="v1.1.0"></a>
+  <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases"><img src="https://img.shields.io/badge/release-v1.0.3-red" alt="v1.0.3"></a>
   <a href="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/actions/workflows/ci.yml"><img src="https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src=".github/badges/coverage.svg" alt="Coverage">
 </p>
@@ -31,10 +31,9 @@
 - [开始使用](#开始使用)
 - [快速开始](#快速开始)
 - [在 Agent 中使用](#在-agent-中使用)
-- [新功能](#新功能)
+- [功能特性](#功能特性)
 - [核心服务](#核心服务)
 - [安全设计](#安全设计)
-- [AI Agent Skills](#ai-agent-skills)
 - [参考与文档](#参考与文档)
 - [贡献指南](#贡献指南)
 
@@ -147,43 +146,35 @@ dws auth login
 ```bash
 dws contact user search --keyword "悟空"           # 搜索联系人
 dws calendar event list                            # 查看日历日程
-dws todo task create --title "季度汇报" --executors "<userId>"   # 创建待办
+dws todo task create --title "季度汇报" --executors "<your-userId>"   # 创建待办（请替换为真实 userId）
 dws todo task list --dry-run                       # 预览操作但不执行
 ```
 
 ## 在 Agent 中使用
 
-dws 是为 AI Agent 设计的 CLI 工具。以下是接入指南。
-
-### 1. 环境配置
+dws 是为 AI Agent 设计的 CLI 工具。请先完成[安装](#安装)和[开始使用](#开始使用)，然后配置 Agent 环境：
 
 ```bash
-# 安装 dws
-curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install.sh | sh
-
 # 通过环境变量配置认证（Agent 推荐方式，无需交互式登录）
 export DWS_CLIENT_ID=<your-app-key>
 export DWS_CLIENT_SECRET=<your-app-secret>
 dws auth login
 ```
 
-### 2. Agent 调用模式
+### Agent 调用模式
 
 ```bash
 # 使用 --yes 跳过确认提示（Agent 必须）
-dws todo task create --title "Review PR" --yes
+dws todo task create --title "Review PR" --executors "<your-userId>" --yes
 
 # 使用 --dry-run 预览操作（安全执行）
-dws contact user search --keyword "test" --dry-run
+dws contact user search --keyword "张三" --dry-run
 
 # 使用 --jq 精确提取（节省 token）
-dws contact user search --keyword "test" --jq '.response.content'
-
-# 使用 --fields 只返回需要的字段
-dws calendar event list --fields response
+dws contact user get-self --jq '.result[0].orgEmployeeModel | {name: .orgUserName, dept: .depts[0].deptName, userId}'
 ```
 
-### 3. Schema 发现（Agent 自主探索）
+### Schema 发现
 
 Agent 无需预置所有命令知识，通过 `dws schema` 动态发现可用能力：
 
@@ -192,15 +183,78 @@ Agent 无需预置所有命令知识，通过 `dws schema` 动态发现可用能
 dws schema --jq '.products[] | {id, tool_count: (.tools | length)}'
 
 # 第二步：查看目标工具的参数结构
-dws schema aitable.query_records --jq '.tool.input_schema'
+dws schema aitable.query_records --jq '.tool.parameters'
 
 # 第三步：构造正确的调用
-dws aitable record query --base-id "xxx" --table-id "yyy" --limit 10
+dws aitable record query --base-id BASE_ID --table-id TABLE_ID --limit 10
 ```
 
-### 4. 错误容忍
+### Agent Skills
 
-dws 的智能纠错引擎对 Agent 生成的常见错误有高容忍度：
+仓库内置完整的 Agent Skill 体系（`skills/`），安装后 Claude Code / Cursor 等 AI 工具可通过自然语言直接操作钉钉：
+
+```bash
+# 安装 skills 到当前项目
+curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install-skills.sh | sh
+```
+
+> `install.sh` 安装到 `$HOME/.agents/skills/dws`（全局）；`install-skills.sh` 安装到 `./.agents/skills/dws`（当前项目）。
+
+**包含内容：**
+
+| 组件 | 路径 | 说明 |
+|------|------|------|
+| 主 Skill | `SKILL.md` | 意图路由、决策树、安全规则、错误处理 |
+| 产品参考 | `references/products/*.md` | 各产品命令详细参考（aitable、chat、calendar 等） |
+| 意图指南 | `references/intent-guide.md` | 易混淆场景消歧（如 report vs todo） |
+| 全局参考 | `references/global-reference.md` | 认证、输出格式、全局 flag |
+| 错误码 | `references/error-codes.md` | 错误码 + 调试流程 |
+| Recovery 指南 | `references/recovery-guide.md` | `RECOVERY_EVENT_ID` 处理 |
+| 现成脚本 | `scripts/*.py` | 13 个批量操作脚本（见下方） |
+
+<details>
+<summary><strong>现成脚本</strong> — 13 个 Python 脚本，覆盖常见多步工作流</summary>
+
+| 脚本 | 说明 |
+|------|------|
+| `calendar_schedule_meeting.py` | 一键创建日程 + 添加参与者 + 搜索并预定空闲会议室 |
+| `calendar_free_slot_finder.py` | 查询多人共同空闲时段，推荐最佳会议时间 |
+| `calendar_today_agenda.py` | 查看今天/明天/本周的日程安排 |
+| `import_records.py` | 从 CSV/JSON 批量导入记录到 AI 表格 |
+| `bulk_add_fields.py` | 批量添加字段到 AI 表格数据表 |
+| `upload_attachment.py` | 上传附件到 AI 表格 attachment 字段 |
+| `todo_batch_create.py` | 从 JSON 文件批量创建待办（含优先级、截止时间、执行者） |
+| `todo_daily_summary.py` | 汇总今天/本周未完成的待办 |
+| `todo_overdue_check.py` | 扫描已过截止时间但未完成的待办，输出逾期清单 |
+| `contact_dept_members.py` | 按部门名称搜索并列出所有成员 |
+| `attendance_my_record.py` | 查看我今天/本周/指定日期的考勤记录 |
+| `attendance_team_shift.py` | 查询团队成员本周排班和出勤统计 |
+| `report_inbox_today.py` | 查看今天收到的日志列表及详情 |
+
+</details>
+
+**ISV 集成**：编写您自己的 Agent Skill，与 dws 内置 Skill 搭配构建跨产品工作流：**ISV Skill → dws Skill → 钉钉开放平台 API（强制鉴权 + 全链路审计）**。
+
+## 功能特性
+
+<details>
+<summary><strong>智能输入纠错</strong> — 自动修正 AI 模型常见的参数错误 <code>v1.0.1</code></summary>
+
+内置 Pipeline 纠错引擎，支持命名风格转换、粘连参数拆分、拼写模糊匹配：
+
+```bash
+# 命名风格自动转换 (camelCase / snake_case / UPPER → kebab-case)
+dws aitable record query --baseId BASE_ID --tableId TABLE_ID         # 自动纠正为 --base-id --table-id
+
+# 粘连参数自动拆分
+dws contact user search --keyword "张三" --timeout30                  # 自动拆分为 --timeout 30
+
+# 拼写错误模糊匹配
+dws aitable record query --base-id BASE_ID --tabel-id TABLE_ID       # --tabel-id → --table-id
+
+# 参数值归一化 (布尔 / 数字 / 日期 / 枚举)
+# "yes" → true, "1,000" → 1000, "2024/03/29" → "2024-03-29", "ACTIVE" → "active"
+```
 
 | Agent 输出 | dws 自动纠正为 |
 |-----------|--------------|
@@ -210,78 +264,71 @@ dws 的智能纠错引擎对 Agent 生成的常见错误有高容忍度：
 | `--USER-ID` | `--user-id` |
 | `--user_name` | `--user-name` |
 
-### 5. Agent Skill 集成
+</details>
 
-安装 Agent Skills 后，Claude Code / Cursor 等工具可直接使用钉钉能力：
-
-```bash
-# 安装 skills 到当前项目
-curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install-skills.sh | sh
-```
-
-> 详见 [AI Agent Skills](#ai-agent-skills) 章节。
-
-## 新功能
-
-### 智能输入纠错
-
-dws 内置 Pipeline 纠错引擎，自动修正 AI 模型常见的参数错误，无需人工干预：
+<details>
+<summary><strong>jq 过滤 & 字段筛选</strong> — 精确控制输出，减少 token 消耗 <code>v1.0.1</code></summary>
 
 ```bash
-# 命名风格自动转换 (camelCase / snake_case / UPPER → kebab-case)
-dws aitable record query --baseId x --tableId y         # 自动纠正为 --base-id --table-id
-
-# 粘连参数自动拆分
-dws contact user search --keyword "test" --timeout30     # 自动拆分为 --timeout 30
-
-# 拼写错误模糊匹配
-dws aitable record query --base-id x --tabel-id y       # --tabel-id → --table-id
-
-# 参数值归一化 (布尔 / 数字 / 日期 / 枚举)
-# "yes" → true, "1,000" → 1000, "2024/03/29" → "2024-03-29", "ACTIVE" → "active"
-```
-
-### JSON 字段筛选 & jq 过滤
-
-精确控制输出内容，减少 token 消耗：
-
-```bash
-# 只返回指定字段
-dws aitable record query --base-id x --table-id y --fields invocation,response
-
 # 内置 jq 表达式
-dws aitable record query --base-id x --table-id y --jq '.invocation.params'
+dws aitable record query --base-id BASE_ID --table-id TABLE_ID --jq '.invocation.params'
 dws schema --jq '.products[] | {id, tools: (.tools | length)}'
+
+# 只返回指定字段
+dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocation,response
 ```
 
-### Schema 自省
+</details>
 
-Agent 可以在调用前查询任何工具的参数结构：
+<details>
+<summary><strong>Schema 自省</strong> — 调用前查询任意工具的参数结构 <code>v1.0.1</code></summary>
 
 ```bash
 dws schema                                              # 列出所有产品和工具
 dws schema aitable.query_records                        # 查看参数 Schema
-dws schema aitable.query_records --jq '.tool.input_schema.required'   # 查看必填字段
+dws schema aitable.query_records --jq '.tool.required'   # 查看必填字段
 dws schema --jq '.products[].id'                        # 提取所有产品 ID
 ```
 
+</details>
+
+<details>
+<summary><strong>管道 & 文件输入</strong> — 从文件或 stdin 读取 flag 值 <code>v1.0.1</code></summary>
+
+```bash
+# 从文件读取消息内容
+dws chat message send-by-bot --robot-code BOT_CODE --group GROUP_ID \
+  --title "周报" --text @report.md
+
+# 通过管道传入内容
+cat report.md | dws chat message send-by-bot --robot-code BOT_CODE --group GROUP_ID \
+  --title "周报"
+
+# 显式从 stdin 读取
+dws chat message send-by-bot --robot-code BOT_CODE --group GROUP_ID \
+  --title "周报" --text @-
+```
+
+</details>
+
 ## 核心服务
 
-| 服务 | 命令 | 描述 |
-|---------|---------|-------------|
-| 通讯录 | `contact` | 用户 / 部门 |
-| 群聊 | `chat` | 群管理 / 群成员 / 机器人消息 / Webhook |
-| 日历 | `calendar` | 日程 / 会议室 / 闲忙 |
-| 待办 | `todo` | 任务管理 |
-| 审批 | `approval` | 流程 / 表单 / 实例 |
-| 考勤 | `attendance` | 打卡 / 排班 / 统计 |
-| DING | `ding` | DING 消息 / 发送 / 撤回 |
-| 日志 | `report` | 日志 / 模版 / 统计 |
-| 智能表格 | `aitable` | AI 表格操作 |
-| 工作台 | `workbench` | 应用查询 |
-| 开发者文档 | `devdoc` | 开放平台文档搜索 |
+| 服务 | 命令 | 工具数 | 子命令 | 描述 |
+|------|------|:------:|--------|------|
+| 通讯录 | `contact` | 8 | `user` `dept` | 按姓名/手机号搜索、批量查询、部门树、当前用户信息 |
+| 群聊 | `chat` | 14 | `message` `group` `bot` `search` | 群增删改查、成员管理、消息拉取、话题回复、以用户身份发消息 |
+| 机器人 | `chat bot` | 9 | — | 机器人创建、群聊/单聊消息、Webhook、消息撤回 |
+| 日历 | `calendar` | 13 | `event` `room` `participant` `busy` | 日程增删改查、会议室预订、闲忙查询、参与者管理 |
+| 待办 | `todo` | 6 | `task` | 创建、列表、修改、完成、详情、删除 |
+| 审批 | `oa` | 9 | `approval` | 同意/拒绝/撤销、待我审批、我发起的、流程列表 |
+| 考勤 | `attendance` | 4 | `record` `shift` `summary` `rules` | 打卡记录、排班查询、考勤摘要、考勤组规则 |
+| DING | `ding` | 3 | `message` | 发送/撤回 DING 消息 |
+| 日志 | `report` | 7 | `create` `list` `detail` `template` `stats` `sent` | 创建日志、收发列表、模版、统计 |
+| 智能表格 | `aitable` | 27 | `base` `table` `record` `field` `attachment` `template` | 多维表/数据表/记录/字段全量 CRUD、视图、导入导出、模板 |
+| 工作台 | `workbench` | 2 | `app` | 批量查询应用详情 |
+| 开发者文档 | `devdoc` | 2 | `article` | 搜索开放平台文档与错误码 |
 
-运行 `dws --help` 查看完整列表，或 `dws <service> --help` 查看子命令。
+> 12 个产品，104 个工具。运行 `dws --help` 查看完整列表，或 `dws <service> --help` 查看子命令。
 
 <details>
 <summary>即将推出</summary>
@@ -334,23 +381,6 @@ dws schema --jq '.products[].id'                        # 提取所有产品 ID
 </details>
 
 > 发现安全漏洞？请通过 [GitHub Security Advisories](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/security/advisories/new) 报告，详见 [SECURITY.md](./SECURITY.md)。
-
-## AI Agent Skills
-
-仓库为每个钉钉产品提供 Agent Skill（`SKILL.md`），安装脚本会自动部署到 `~/.agents/skills/dws`。
-
-```bash
-# 仅安装 skills 到当前项目
-curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install-skills.sh | sh
-```
-
-> `install.sh` 安装到 `$HOME/.agents/skills/dws`（全局）；`install-skills.sh` 安装到 `./.agents/skills/dws`（当前项目）。
-
-### ISV Skill 联调
-
-编写您自己的 Agent Skill，与 dws 内置 skill 搭配构建跨产品工作流：**ISV Skill → dws Skill → 钉钉开放平台 API（强制鉴权 + 全链路审计）**。
-
-**示例**：CRM Skill 调用日历 Skill 为客户创建会议，再通过待办 Skill 分配跟进任务 — AI Agent 在一次对话中完成跨系统协作。
 
 ## 参考与文档
 
