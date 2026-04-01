@@ -52,7 +52,9 @@ const recoveryEventStderrPrefix = "RECOVERY_EVENT_ID="
 // Execute runs the root command and returns the process exit code.
 func Execute() int {
 	totalStart := time.Now()
+	timing := NewTimingCollector()
 	defer func() {
+		timing.PrintIfEnabled()
 		if os.Getenv("DWS_PERF_DEBUG") != "" {
 			_, _ = fmt.Fprintf(os.Stderr, "[PERF] Execute total: %v\n", time.Since(totalStart))
 		}
@@ -61,12 +63,17 @@ func Execute() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Attach timing collector to context for use by child components
+	ctx = WithTimingCollector(ctx, timing)
+
 	initStart := time.Now()
 	recovery.ResetRuntimeState()
 	engine := newPipelineEngine()
 	root := NewRootCommandWithEngine(ctx, engine)
+	initDuration := time.Since(initStart)
+	timing.Record("cmd_init", initDuration)
 	if os.Getenv("DWS_PERF_DEBUG") != "" {
-		_, _ = fmt.Fprintf(os.Stderr, "[PERF] command init: %v\n", time.Since(initStart))
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] command init: %v\n", initDuration)
 	}
 
 	// Run PreParse handlers on raw argv before Cobra parses flags.
@@ -76,8 +83,10 @@ func Execute() int {
 
 	execStart := time.Now()
 	executed, err := root.ExecuteC()
+	execDuration := time.Since(execStart)
+	timing.Record("cobra_exec", execDuration)
 	if os.Getenv("DWS_PERF_DEBUG") != "" {
-		_, _ = fmt.Fprintf(os.Stderr, "[PERF] cobra ExecuteC: %v\n", time.Since(execStart))
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] cobra ExecuteC: %v\n", execDuration)
 	}
 	if err != nil {
 		if executed == nil {

@@ -101,7 +101,9 @@ func (r *runtimeRunner) Run(ctx context.Context, invocation executor.Invocation)
 		}
 	}
 
+	catalogStart := time.Now()
 	catalog, err := r.loader.Load(ctx)
+	RecordTiming(ctx, "catalog_load", time.Since(catalogStart))
 	if err != nil {
 		return executor.Result{}, err
 	}
@@ -132,9 +134,11 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 	}
 
 	authStart := time.Now()
-	tc := r.transport.WithAuth(r.resolveAuthToken(ctx), resolveIdentityHeaders())
+	authToken := r.resolveAuthToken(ctx)
+	authDuration := time.Since(authStart)
+	RecordTiming(ctx, "auth_token", authDuration)
 	if os.Getenv("DWS_PERF_DEBUG") != "" {
-		_, _ = fmt.Fprintf(os.Stderr, "[PERF] resolveAuthToken: %v\n", time.Since(authStart))
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] resolveAuthToken: %v\n", authDuration)
 	}
 
 	if invocation.DryRun {
@@ -166,10 +170,25 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 		}, nil
 	}
 
+	// Fail-fast: reject unauthenticated requests before making network calls.
+	// This provides a clear error message instead of cryptic HTTP 400 from MCP.
+	if strings.TrimSpace(authToken) == "" {
+		return executor.Result{}, apperrors.NewAuth(
+			"未登录，请先执行 dws auth login",
+			apperrors.WithReason("not_authenticated"),
+			apperrors.WithHint("运行 'dws auth login' 完成登录后重试"),
+			apperrors.WithActions("dws auth login"),
+		)
+	}
+
+	tc := r.transport.WithAuth(authToken, resolveIdentityHeaders())
+
 	callStart := time.Now()
 	callResult, err := tc.CallTool(ctx, endpoint, invocation.Tool, invocation.Params)
+	callDuration := time.Since(callStart)
+	RecordTiming(ctx, "mcp_call", callDuration)
 	if os.Getenv("DWS_PERF_DEBUG") != "" {
-		_, _ = fmt.Fprintf(os.Stderr, "[PERF] MCP CallTool: %v\n", time.Since(callStart))
+		_, _ = fmt.Fprintf(os.Stderr, "[PERF] MCP CallTool: %v\n", callDuration)
 	}
 	if err != nil {
 		captureRuntimeFailure(invocation, err, err)
@@ -247,8 +266,10 @@ func getCachedRuntimeToken(ctx context.Context) string {
 	cachedRuntimeTokenOnce.Do(func() {
 		loadStart := time.Now()
 		defer func() {
+			loadDuration := time.Since(loadStart)
+			RecordTiming(ctx, "keychain_load", loadDuration)
 			if os.Getenv("DWS_PERF_DEBUG") != "" {
-				_, _ = fmt.Fprintf(os.Stderr, "[PERF] getCachedRuntimeToken (first load): %v\n", time.Since(loadStart))
+				_, _ = fmt.Fprintf(os.Stderr, "[PERF] getCachedRuntimeToken (first load): %v\n", loadDuration)
 			}
 		}()
 
