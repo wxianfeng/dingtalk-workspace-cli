@@ -28,6 +28,7 @@
 
 - [Why dws?](#why-dws)
 - [Installation](#installation)
+- [Upgrade](#upgrade)
 - [Getting Started](#getting-started)
 - [Quick Start](#quick-start)
 - [Using with Agents](#using-with-agents)
@@ -82,6 +83,41 @@ cp dws ~/.local/bin/         # install to PATH
 ```
 
 > Requires Go 1.25+. Use `make package` to cross-compile for all platforms (macOS / Linux / Windows x amd64 / arm64).
+
+</details>
+
+## Upgrade
+
+dws has built-in self-upgrade capability. Updates are pulled directly from [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases) with SHA256 integrity verification and automatic backup.
+
+```bash
+dws upgrade                    # interactive upgrade to latest version
+dws upgrade --check            # check for new versions without installing
+dws upgrade --list             # list all available versions
+dws upgrade --version v1.0.7   # upgrade to a specific version
+dws upgrade --rollback         # rollback to the previous version
+dws upgrade -y                 # skip confirmation prompt
+```
+
+<details>
+<summary><strong>How it works</strong></summary>
+
+The upgrade process follows a two-phase atomic flow to ensure consistency:
+
+1. **Prepare** — downloads the platform-specific binary and skill packages to a temporary directory, verifies SHA256 checksums, and extracts/validates all files. If any step fails, the upgrade aborts without modifying the existing installation.
+2. **Apply** — only after all preparations succeed, the binary is replaced and skill packages are installed to all detected agent directories (`~/.agents/skills/dws`, `~/.claude/skills/dws`, `~/.cursor/skills/dws`, etc.).
+
+A backup of the current version is automatically created before each upgrade. Use `dws upgrade --rollback` to restore the previous version if needed.
+
+| Flag | Description |
+|------|-------------|
+| `--check` | Check for updates without installing |
+| `--list` | List all available versions with changelogs |
+| `--version` | Upgrade to a specific version (e.g. `v1.0.7`) |
+| `--rollback` | Rollback to the previous backed-up version |
+| `--force` | Force reinstall even if already on the latest version |
+| `--skip-skills` | Skip skill package update |
+| `-y` | Skip confirmation prompt |
 
 </details>
 

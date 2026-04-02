@@ -28,6 +28,7 @@
 
 - [为什么选择 dws？](#why-dws)
 - [安装](#安装)
+- [升级](#升级)
 - [开始使用](#开始使用)
 - [快速开始](#快速开始)
 - [在 Agent 中使用](#在-agent-中使用)
@@ -82,6 +83,41 @@ cp dws ~/.local/bin/         # 安装到 PATH
 ```
 
 > 需要 Go 1.25+。也可以用 `make package` 构建所有平台产物（macOS / Linux / Windows × amd64 / arm64）。
+
+</details>
+
+## 升级
+
+dws 内置自升级能力，直接从 [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases) 拉取更新，支持 SHA256 完整性校验和自动备份。
+
+```bash
+dws upgrade                    # 交互式升级到最新版本
+dws upgrade --check            # 仅检查是否有新版本
+dws upgrade --list             # 列出所有可用版本
+dws upgrade --version v1.0.7   # 升级到指定版本
+dws upgrade --rollback         # 回滚到上一版本
+dws upgrade -y                 # 跳过确认直接升级
+```
+
+<details>
+<summary><strong>工作原理</strong></summary>
+
+升级过程采用两阶段原子流程，确保一致性：
+
+1. **准备阶段** — 将平台对应的二进制文件和技能包下载到临时目录，校验 SHA256 校验和，解压并验证所有文件。任何步骤失败则立即中止，不会修改现有安装。
+2. **执行阶段** — 仅在所有准备工作成功后，替换二进制文件并将技能包安装到所有已检测到的 Agent 目录（`~/.agents/skills/dws`、`~/.claude/skills/dws`、`~/.cursor/skills/dws` 等）。
+
+每次升级前自动备份当前版本，可通过 `dws upgrade --rollback` 随时回滚。
+
+| Flag | 说明 |
+|------|------|
+| `--check` | 仅检查更新，不安装 |
+| `--list` | 列出所有可用版本及更新日志 |
+| `--version` | 升级到指定版本（如 `v1.0.7`） |
+| `--rollback` | 回滚到上一个备份版本 |
+| `--force` | 强制重新安装，即使已是最新版本 |
+| `--skip-skills` | 跳过技能包更新 |
+| `-y` | 跳过确认提示 |
 
 </details>
 
