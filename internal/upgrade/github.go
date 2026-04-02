@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	gitHubAPIBase  = "https://api.github.com"
-	defaultOwner   = "DingTalk-Real-AI"
-	defaultRepo    = "dingtalk-workspace-cli"
-	httpTimeout    = 30 * time.Second
-	userAgent      = "DWS-CLI-Upgrade/1.0"
-	skillsZipName  = "dws-skills.zip"
-	checksumsName  = "checksums.txt"
+	gitHubAPIBase = "https://api.github.com"
+	defaultOwner  = "DingTalk-Real-AI"
+	defaultRepo   = "dingtalk-workspace-cli"
+	httpTimeout   = 30 * time.Second
+	userAgent     = "DWS-CLI-Upgrade/1.0"
+	skillsZipName = "dws-skills.zip"
+	checksumsName = "checksums.txt"
 )
 
 // GitHubRelease represents a single release from the GitHub Releases API.

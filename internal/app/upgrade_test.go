@@ -115,8 +115,8 @@ func TestStripCommitHash(t *testing.T) {
 	}{
 		{"abcdef1234567 - fix bug", "fix bug"},
 		{"abcdef1234567 fix bug", "fix bug"},
-		{"short", "short"},       // too short to be a hash
-		{"abc123", "abc123"},     // less than 7 hex chars
+		{"short", "short"},   // too short to be a hash
+		{"abc123", "abc123"}, // less than 7 hex chars
 		{"no hash here", "no hash here"},
 		{"ABCDEF1234567 - upper case hash", "upper case hash"},
 	}

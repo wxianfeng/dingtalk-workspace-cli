@@ -18,7 +18,7 @@ func TestExtractZip_BasicFiles(t *testing.T) {
 	createTestZip(t, zipPath, map[string]string{
 		"README.md":    "# Hello",
 		"dws/SKILL.md": "# Skill",
-		"dws/data.txt":  "some data",
+		"dws/data.txt": "some data",
 	})
 
 	if err := ExtractZip(zipPath, targetDir); err != nil {

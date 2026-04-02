@@ -110,13 +110,13 @@ func runUpgradeCheck(cmd *cobra.Command, format string) error {
 
 	if format == "json" {
 		return writeJSON(cmd.OutOrStdout(), map[string]any{
-			"current_version":  ensureV(currentVer),
-			"latest_version":   "v" + latest.Version,
-			"needs_upgrade":    needsUpgrade,
-			"release_date":     latest.Date,
-			"prerelease":       latest.Prerelease,
-			"changelog":        parseChangelogEntries(latest.Changelog, 10),
-			"release_url":      latest.HTMLURL,
+			"current_version": ensureV(currentVer),
+			"latest_version":  "v" + latest.Version,
+			"needs_upgrade":   needsUpgrade,
+			"release_date":    latest.Date,
+			"prerelease":      latest.Prerelease,
+			"changelog":       parseChangelogEntries(latest.Changelog, 10),
+			"release_url":     latest.HTMLURL,
 		})
 	}
 
