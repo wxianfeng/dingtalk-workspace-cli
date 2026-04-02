@@ -28,13 +28,14 @@ jobs:
             const title = `[${action.toUpperCase()}] Issue #${issue.number}: ${issue.title}`;
             const content = issue.body?.substring(0, 500) || 'No description';
             const url = issue.html_url;
+            const labelsText = (issue.labels || []).map(label => label.name).join(', ') || '无标签';
             
             // 消息内容必须包含关键字（如 "issue"）以支持 Custom Keywords 安全模式
             const message = {
               msgtype: 'markdown',
               markdown: {
                 title: 'GitHub Issue 通知',
-                text: `## 🔔 GitHub Issue 通知\n\n**${title}**\n\n${content}${content.length >= 500 ? '...' : ''}\n\n[点击查看详情](${url})\n\n---\n📦 ${context.repo.owner}/${context.repo.repo}\n\n**关键词**: issue`
+                text: `## 🔔 GitHub Issue 通知\n\n**${title}**\n\n🏷️ **Labels**: ${labelsText}\n\n${content}${content.length >= 500 ? '...' : ''}\n\n[点击查看详情](${url})\n\n---\n📦 ${context.repo.owner}/${context.repo.repo}\n\n**关键词**: issue`
               }
             };
             
