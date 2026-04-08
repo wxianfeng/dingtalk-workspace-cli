@@ -17,6 +17,8 @@
 #   DWS_ARCH          — architecture override          (amd64 or arm64)
 #   DWS_NO_SKILLS     — set to 1 to skip skills install
 #   DWS_SKILLS_ONLY   — set to 1 to install only skills
+#
+# Agent skills paths follow build/npm/install.js AGENT_DIRS (order and entries must match).
 
 $ErrorActionPreference = "Stop"
 
@@ -28,8 +30,22 @@ $NoSkills = $env:DWS_NO_SKILLS -eq "1"
 $SkillsOnly = $env:DWS_SKILLS_ONLY -eq "1"
 $SkillName = "dws"
 
-# Agent directory to install skills into — most agents can fall back to .agents\skills
-$AgentDir = ".agents\skills"
+# Agent skill base directories (same order as build/npm/install.js AGENT_DIRS).
+$AgentDirs = @(
+    ".agents\skills",
+    ".claude\skills",
+    ".cursor\skills",
+    ".gemini\skills",
+    ".codex\skills",
+    ".github\skills",
+    ".windsurf\skills",
+    ".augment\skills",
+    ".cline\skills",
+    ".amp\skills",
+    ".kiro\skills",
+    ".trae\skills",
+    ".openclaw\skills"
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -170,6 +186,17 @@ function Copy-SkillToDir {
     }
 }
 
+function Copy-SkillToDirSummary {
+    param([string]$SkillSrc, [string]$Dest, [string]$Label)
+
+    if (Test-Path $Dest) {
+        Remove-Item -Path $Dest -Recurse -Force
+    }
+
+    $fileCount = Copy-DirRecursive -Source $SkillSrc -Destination $Dest
+    Write-Say "✅ Skills → $Label ($fileCount files)"
+}
+
 function Resolve-SourceRoot {
     $scriptPath = $PSScriptRoot
     if (-not $scriptPath) { return $null }
@@ -280,9 +307,45 @@ function Install-SkillsLocal {
     Write-Say ""
     Write-Say "📦 Installing agent skills from local source: $skillSrc"
 
-    $dest = Join-Path (Join-Path $HOME $AgentDir) $SkillName
-    $label = "~\$AgentDir\$SkillName"
-    Copy-SkillToDir -SkillSrc $skillSrc -Dest $dest -Label $label
+    Install-SkillsToHomes -SkillSrc $skillSrc -Root $HOME
+}
+
+function Install-SkillsToHomes {
+    param(
+        [string]$SkillSrc,
+        [string]$Root = $HOME
+    )
+
+    $installed = 0
+    for ($i = 0; $i -lt $AgentDirs.Count; $i++) {
+        $agentDir = $AgentDirs[$i]
+        $baseDir = Join-Path $Root $agentDir
+        $parentGate = Split-Path $baseDir -Parent
+        if ($i -gt 0 -and !(Test-Path $parentGate)) {
+            continue
+        }
+        $dest = Join-Path $baseDir $SkillName
+        if ($Root -eq $HOME) {
+            $label = "~\$agentDir\$SkillName"
+        } else {
+            $label = Join-Path $Root (Join-Path $agentDir $SkillName)
+        }
+        if ($installed -eq 0) {
+            Copy-SkillToDir -SkillSrc $SkillSrc -Dest $dest -Label $label
+        } else {
+            Copy-SkillToDirSummary -SkillSrc $SkillSrc -Dest $dest -Label $label
+        }
+        $installed++
+    }
+    if ($installed -eq 0) {
+        $fallback = Join-Path (Join-Path $Root ".agents\skills") $SkillName
+        if ($Root -eq $HOME) {
+            $flabel = "~\.agents\skills\$SkillName"
+        } else {
+            $flabel = Join-Path $Root (Join-Path ".agents\skills" $SkillName)
+        }
+        Copy-SkillToDir -SkillSrc $SkillSrc -Dest $fallback -Label $flabel
+    }
 }
 
 # ── Install Binary from Source ───────────────────────────────────────────────
@@ -359,9 +422,7 @@ function Install-Skills {
             return
         }
 
-        $dest = Join-Path (Join-Path $HOME $AgentDir) $SkillName
-        $label = "~\$AgentDir\$SkillName"
-        Copy-SkillToDir -SkillSrc $skillSrc -Dest $dest -Label $label
+        Install-SkillsToHomes -SkillSrc $skillSrc -Root $HOME
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }

@@ -35,6 +35,7 @@ var knownSkillDirs = []string{
 	".amp/skills",
 	".kiro/skills",
 	".trae/skills",
+	".openclaw/skills",
 }
 
 // skillDirBlacklist contains parent directories whose skills are managed by

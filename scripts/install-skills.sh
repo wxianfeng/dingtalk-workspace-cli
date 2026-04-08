@@ -1,21 +1,23 @@
 #!/bin/sh
 set -eu
 
-# Install DWS agent skills from GitHub into detected agent directories.
+# Install DWS agent skills from GitHub Releases into agent skill directories.
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install-skills.sh | sh
 #
-# The script downloads the dws-skills.zip release asset from GitHub Releases
-# and copies it into every detected agent skills directory in the current
-# project.
+# Downloads dws-skills.zip from GitHub Releases and copies it under each target
+# path using the same rules as build/npm/install.js installSkillsToHomes
+# (AGENT_DIRS + parent-directory gate), with root defaulting to the current
+# directory. Set DWS_SKILLS_ROOT=$HOME to match npm install layout exactly.
+#
+# Environment variables (optional):
+#   DWS_VERSION        — release tag (default: latest)
+#   DWS_SKILLS_ROOT    — base path for agent dirs (default: $PWD)
 
 REPO="DingTalk-Real-AI/dingtalk-workspace-cli"
 VERSION="${DWS_VERSION:-latest}"
 SKILL_NAME="dws"
-
-# ── Agent directory to install skills into ───────────────────────────────────
-# Only install to .agents/skills — most agents can fall back to this directory.
-AGENT_DIR=".agents/skills"
+ROOT="${DWS_SKILLS_ROOT:-$PWD}"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -51,13 +53,106 @@ extract_zip() {
   exit 1
 }
 
+# One-line summary copy (2nd+ targets).
+_copy_skill_summary() {
+  _src="$1"
+  _dest="$2"
+  _label="$3"
+
+  if [ -d "$_dest" ]; then
+    rm -rf "$_dest"
+  fi
+
+  mkdir -p "$_dest"
+  cp -R "$_src/"* "$_dest/" 2>/dev/null || cp -r "$_src/"* "$_dest/"
+  file_count="$(find "$_dest" -type f | wc -l | tr -d ' ')"
+
+  printf '  ✅ Skills → %s (%s files)\n' "$_label" "$file_count"
+}
+
+# Full copy with top-level listing (1st target).
+_copy_skill() {
+  _src="$1"
+  _dest="$2"
+  _label="$3"
+
+  if [ -d "$_dest" ]; then
+    rm -rf "$_dest"
+  fi
+
+  mkdir -p "$_dest"
+  cp -R "$_src/"* "$_dest/" 2>/dev/null || cp -r "$_src/"* "$_dest/"
+  file_count="$(find "$_dest" -type f | wc -l | tr -d ' ')"
+
+  printf '  ✅ Skills → %s (%s files)\n' "$_label" "$file_count"
+
+  for entry in "$_dest"/*; do
+    entry_name="$(basename "$entry")"
+    if [ -d "$entry" ]; then
+      sub_count="$(find "$entry" -type f | wc -l | tr -d ' ')"
+      printf '     📁 %s/ (%s files)\n' "$entry_name" "$sub_count"
+    else
+      printf '     📄 %s\n' "$entry_name"
+    fi
+  done
+}
+
+# Same semantics as build/npm/install.js installSkillsToHomes (root = DWS_SKILLS_ROOT or PWD).
+install_skills_to_root() {
+  skill_src="$1"
+  root="$2"
+  installed=0
+  idx=0
+  for agent_dir in \
+    ".agents/skills" \
+    ".claude/skills" \
+    ".cursor/skills" \
+    ".gemini/skills" \
+    ".codex/skills" \
+    ".github/skills" \
+    ".windsurf/skills" \
+    ".augment/skills" \
+    ".cline/skills" \
+    ".amp/skills" \
+    ".kiro/skills" \
+    ".trae/skills" \
+    ".openclaw/skills"
+  do
+    base_dir="$root/$agent_dir"
+    parent_gate="$(dirname "$base_dir")"
+    if [ "$idx" -gt 0 ] && [ ! -e "$parent_gate" ]; then
+      idx=$((idx + 1))
+      continue
+    fi
+    dest="$base_dir/$SKILL_NAME"
+    if [ "$root" = "$HOME" ]; then
+      label="~/$agent_dir/$SKILL_NAME"
+    else
+      label="$root/$agent_dir/$SKILL_NAME"
+    fi
+    if [ "$installed" -eq 0 ]; then
+      _copy_skill "$skill_src" "$dest" "$label"
+    else
+      _copy_skill_summary "$skill_src" "$dest" "$label"
+    fi
+    installed=$((installed + 1))
+    idx=$((idx + 1))
+  done
+  if [ "$installed" -eq 0 ]; then
+    if [ "$root" = "$HOME" ]; then
+      flabel="~/.agents/skills/$SKILL_NAME"
+    else
+      flabel="$root/.agents/skills/$SKILL_NAME"
+    fi
+    _copy_skill "$skill_src" "$root/.agents/skills/$SKILL_NAME" "$flabel"
+  fi
+}
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 main() {
   need_cmd curl
   resolve_version
-
-  CWD="$(pwd)"
 
   printf '\n'
   printf '  ┌──────────────────────────────────────┐\n'
@@ -66,7 +161,6 @@ main() {
   printf '  └──────────────────────────────────────┘\n'
   printf '\n'
 
-  # Download the tarball to a temp directory
   TMPDIR_WORK="$(mktemp -d)"
   trap 'rm -rf "$TMPDIR_WORK"' EXIT INT TERM
 
@@ -85,21 +179,9 @@ main() {
     exit 1
   fi
 
-  # Install to .agents/skills only
-  dest="$CWD/$AGENT_DIR/$SKILL_NAME"
-
-  # Remove existing installation
-  if [ -d "$dest" ]; then
-    rm -rf "$dest"
-  fi
-
-  # Copy skill files
-  mkdir -p "$dest"
-  cp -R "$SKILL_SRC/"* "$dest/"
-  file_count="$(find "$dest" -type f | wc -l | tr -d ' ')"
-
-  printf '  ✅ Universal (.agents)\n'
-  printf '     → %s/%s (%s files)\n' "$AGENT_DIR" "$SKILL_NAME" "$file_count"
+  printf '\n'
+  printf '  Installing under root: %s\n' "$ROOT"
+  install_skills_to_root "$SKILL_SRC" "$ROOT"
 
   printf '\n'
   printf '  📖 Skill includes:\n'

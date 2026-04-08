@@ -10,6 +10,7 @@ import (
 
 var expectedHomeSkillTargets = []string{
 	".agents/skills/dws",
+	".cursor/skills/dws",
 }
 
 func TestInstallScriptSourceModeInstallsBinary(t *testing.T) {
@@ -107,6 +108,11 @@ done
 	mustWriteFile(t, filepath.Join(stubRoot, "make"), []byte(makeStub), 0o755)
 	mustWriteFile(t, filepath.Join(stubRoot, "go"), []byte("#!/bin/sh\ntrue\n"), 0o755)
 
+	// Gate for index>0 agent dirs (matches build/npm/install.js): parent must exist.
+	if err := os.MkdirAll(filepath.Join(fakeHome, ".cursor"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.cursor) error = %v", err)
+	}
+
 	cmd := exec.Command("sh", scriptPath)
 	cmd.Env = append(os.Environ(),
 		"HOME="+fakeHome,
@@ -146,6 +152,9 @@ func TestInstallPowerShellScriptInstallsToAgentsDir(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, ".agents\\skills") {
 		t.Fatalf("install.ps1 missing .agents\\skills")
+	}
+	if !strings.Contains(text, ".cursor\\skills") {
+		t.Fatalf("install.ps1 missing .cursor\\skills (AGENT_DIRS must match build/npm/install.js)")
 	}
 }
 

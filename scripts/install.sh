@@ -14,6 +14,8 @@
 #   DWS_VERSION       — version to install             (default: latest)
 #   DWS_NO_SKILLS     — set to 1 to skip skills install
 #   DWS_SKILLS_ONLY   — set to 1 to install only skills (skip binary)
+#
+# Agent skills paths follow build/npm/install.js AGENT_DIRS (order and entries must match).
 
 set -eu
 
@@ -25,10 +27,6 @@ VERSION="${DWS_VERSION:-latest}"
 NO_SKILLS="${DWS_NO_SKILLS:-0}"
 SKILLS_ONLY="${DWS_SKILLS_ONLY:-0}"
 SKILL_NAME="dws"
-
-# ── Agent directory to install skills into ───────────────────────────────────
-# Only install to .agents/skills — most agents can fall back to this directory.
-AGENT_DIR=".agents/skills"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -179,11 +177,83 @@ install_skills_local() {
   say ""
   say "📦 Installing agent skills from local source: ${skill_src}"
 
-  dest="$HOME/$AGENT_DIR/$SKILL_NAME"
-  display_path="~/$AGENT_DIR/$SKILL_NAME"
-  _copy_skill "$skill_src" "$dest" "$display_path"
+  install_skills_to_homes "$skill_src"
 
   return 0
+}
+
+# Install skill tree into all agent homes (same rules as build/npm/install.js installSkillsToHomes).
+install_skills_to_homes() {
+  skill_src="$1"
+  root="${HOME}"
+  installed=0
+  idx=0
+  for agent_dir in \
+    ".agents/skills" \
+    ".claude/skills" \
+    ".cursor/skills" \
+    ".gemini/skills" \
+    ".codex/skills" \
+    ".github/skills" \
+    ".windsurf/skills" \
+    ".augment/skills" \
+    ".cline/skills" \
+    ".amp/skills" \
+    ".kiro/skills" \
+    ".trae/skills" \
+    ".openclaw/skills"
+  do
+    base_dir="$root/$agent_dir"
+    parent_gate="$(dirname "$base_dir")"
+    if [ "$idx" -gt 0 ] && [ ! -e "$parent_gate" ]; then
+      idx=$((idx + 1))
+      continue
+    fi
+    dest="$base_dir/$SKILL_NAME"
+    case "$root" in
+      "$HOME")
+        label="~/$agent_dir/$SKILL_NAME"
+        ;;
+      *)
+        label="$root/$agent_dir/$SKILL_NAME"
+        ;;
+    esac
+    if [ "$installed" -eq 0 ]; then
+      _copy_skill "$skill_src" "$dest" "$label"
+    else
+      _copy_skill_summary "$skill_src" "$dest" "$label"
+    fi
+    installed=$((installed + 1))
+    idx=$((idx + 1))
+  done
+  if [ "$installed" -eq 0 ]; then
+    case "$root" in
+      "$HOME")
+        flabel="~/.agents/skills/$SKILL_NAME"
+        ;;
+      *)
+        flabel="$root/.agents/skills/$SKILL_NAME"
+        ;;
+    esac
+    _copy_skill "$skill_src" "$root/.agents/skills/$SKILL_NAME" "$flabel"
+  fi
+}
+
+# One-line summary copy (used for 2nd+ agent targets).
+_copy_skill_summary() {
+  _src="$1"
+  _dest="$2"
+  _label="$3"
+
+  if [ -d "$_dest" ]; then
+    rm -rf "$_dest"
+  fi
+
+  mkdir -p "$_dest"
+  cp -R "$_src/"* "$_dest/" 2>/dev/null || cp -r "$_src/"* "$_dest/"
+  file_count="$(find "$_dest" -type f | wc -l | tr -d ' ')"
+
+  say "✅ Skills → ${_label} (${file_count} files)"
 }
 
 # Helper: copy skill files to a destination and print details
@@ -349,9 +419,7 @@ install_skills() {
     fi
   fi
 
-  dest="$HOME/$AGENT_DIR/$SKILL_NAME"
-  display_path="~/$AGENT_DIR/$SKILL_NAME"
-  _copy_skill "$skill_src" "$dest" "$display_path"
+  install_skills_to_homes "$skill_src"
 
   rm -rf "$tmpdir_skills"
 }

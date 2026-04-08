@@ -7,6 +7,7 @@ const os = require("os");
 const path = require("path");
 const childProcess = require("child_process");
 
+// Canonical list: keep scripts/install.sh, scripts/install.ps1, scripts/install-skills.sh in sync.
 const AGENT_DIRS = [
   ".agents/skills",
   ".claude/skills",
@@ -20,6 +21,7 @@ const AGENT_DIRS = [
   ".amp/skills",
   ".kiro/skills",
   ".trae/skills",
+  ".openclaw/skills",
 ];
 
 const PLATFORM_MAP = {

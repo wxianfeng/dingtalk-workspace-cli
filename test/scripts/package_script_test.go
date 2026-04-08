@@ -22,6 +22,7 @@ var expectedPackagedSkillTargets = []string{
 	".amp/skills/dws",
 	".kiro/skills/dws",
 	".trae/skills/dws",
+	".openclaw/skills/dws",
 }
 
 // seedDistArtifacts creates fake goreleaser output archives (empty tar.gz/zip
