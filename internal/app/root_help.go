@@ -26,6 +26,7 @@ func configureRootHelp(root *cobra.Command) {
 
 func renderRootHelp(root *cobra.Command) {
 	services := visibleMCPRootCommands(root)
+	utilities := visibleUtilityRootCommands(root)
 	w := root.OutOrStdout()
 
 	if len(services) == 0 {
@@ -45,8 +46,21 @@ func renderRootHelp(root *cobra.Command) {
 
 	_, _ = fmt.Fprintln(w, "Usage:")
 	_, _ = fmt.Fprintln(w, "  dws <service> [command] [flags]")
+	if len(utilities) > 0 {
+		_, _ = fmt.Fprintln(w, "  dws <command> [flags]")
+	}
 	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, `Use "dws <service> --help" for more information about a discovered MCP service.`)
+	if len(utilities) > 0 {
+		_, _ = fmt.Fprintln(w, "Utility Commands:")
+		_, _ = fmt.Fprintln(w)
+		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+		for _, utility := range utilities {
+			_, _ = fmt.Fprintf(tw, "  %s\t%s\n", utility.Name(), strings.TrimSpace(utility.Short))
+		}
+		_ = tw.Flush()
+		_, _ = fmt.Fprintln(w)
+	}
+	_, _ = fmt.Fprintln(w, `Use "dws <service> --help" for more information about a discovered MCP service or "dws <command> --help" for utility commands.`)
 }
 
 func visibleMCPRootCommands(root *cobra.Command) []*cobra.Command {
@@ -74,6 +88,32 @@ func visibleMCPRootCommands(root *cobra.Command) []*cobra.Command {
 			continue
 		}
 		if !allowed[cmd.Name()] {
+			continue
+		}
+		commands = append(commands, cmd)
+	}
+	return commands
+}
+
+func visibleUtilityRootCommands(root *cobra.Command) []*cobra.Command {
+	if root == nil {
+		return nil
+	}
+
+	productCommands := DirectRuntimeProductIDs()
+	if fn := edition.Get().VisibleProducts; fn != nil {
+		productCommands = make(map[string]bool, len(fn()))
+		for _, product := range fn() {
+			productCommands[product] = true
+		}
+	}
+
+	commands := make([]*cobra.Command, 0)
+	for _, cmd := range root.Commands() {
+		if cmd == nil || cmd.Hidden {
+			continue
+		}
+		if productCommands[cmd.Name()] {
 			continue
 		}
 		commands = append(commands, cmd)
