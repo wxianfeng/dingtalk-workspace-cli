@@ -20,7 +20,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
+
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
 
 // TokenData holds the OAuth token set persisted to disk.
@@ -61,10 +65,46 @@ func (t *TokenData) HasPersistentCode() bool {
 	return t != nil && t.PersistentCode != ""
 }
 
+const tokenJSONFile = "token.json"
+
+// TokenMarker is a lightweight file the host application reads to detect
+// whether the CLI has a valid token without accessing the keychain.
+type TokenMarker struct {
+	UpdatedAt string `json:"updated_at"`
+}
+
+// WriteTokenMarker writes a token.json marker containing only an updated_at
+// timestamp. The host application uses this file's presence and mtime to
+// decide whether it needs to trigger a new auth exchange.
+func WriteTokenMarker(configDir string) error {
+	marker := TokenMarker{UpdatedAt: time.Now().Format(time.RFC3339)}
+	data, _ := json.MarshalIndent(marker, "", "  ")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return err
+	}
+	tmp := filepath.Join(configDir, tokenJSONFile+".tmp")
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(configDir, tokenJSONFile))
+}
+
+// DeleteTokenMarker removes the token.json marker file.
+func DeleteTokenMarker(configDir string) error {
+	return os.Remove(filepath.Join(configDir, tokenJSONFile))
+}
+
 // SaveTokenData saves TokenData to the platform keychain.
-// Uses the new keychain-based storage with random master key for better security.
+// In embedded mode, it also writes a token.json marker file so the host
+// application can detect authentication state without accessing the keychain.
 func SaveTokenData(configDir string, data *TokenData) error {
-	return SaveTokenDataKeychain(data)
+	if err := SaveTokenDataKeychain(data); err != nil {
+		return err
+	}
+	if edition.Get().IsEmbedded {
+		_ = WriteTokenMarker(configDir)
+	}
+	return nil
 }
 
 // LoadTokenData reads TokenData from the platform keychain.
@@ -91,14 +131,13 @@ func LoadTokenData(configDir string) (*TokenData, error) {
 }
 
 // DeleteTokenData removes token data from both keychain and legacy storage.
+// In embedded mode, it also removes the token.json marker file.
 func DeleteTokenData(configDir string) error {
-	// Delete from keychain
 	keychainErr := DeleteTokenDataKeychain()
-
-	// Also clean up any legacy .data file
 	legacyErr := DeleteSecureData(configDir)
-
-	// Return keychain error if any, otherwise legacy error
+	if edition.Get().IsEmbedded {
+		_ = DeleteTokenMarker(configDir)
+	}
 	if keychainErr != nil {
 		return keychainErr
 	}

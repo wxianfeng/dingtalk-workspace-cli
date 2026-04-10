@@ -77,6 +77,10 @@ type Hooks struct {
 	OnAuthError   func(configDir string, err error) error
 	TokenProvider func(ctx context.Context, fallback func() (string, error)) (string, error)
 
+	// --- auth credentials (overlay-only) ---
+	AuthClientID      string // non-empty overrides DefaultClientID
+	AuthClientFromMCP bool   // true routes OAuth through MCP endpoints
+
 	// --- product & endpoint ---
 	StaticServers         func() []ServerInfo                          // non-nil → skip Market discovery
 	VisibleProducts       func() []string                              // non-nil → override help visibility

@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
 
 const (
@@ -110,7 +112,7 @@ func SetClientIDFromMCP(id string) {
 func IsClientIDFromMCP() bool {
 	clientMu.RLock()
 	defer clientMu.RUnlock()
-	return clientIDFromMCP
+	return clientIDFromMCP || edition.Get().AuthClientFromMCP
 }
 
 // GetUserAccessTokenURL returns the appropriate token exchange URL.
@@ -188,6 +190,9 @@ func ClientID() string {
 	clientMu.RUnlock()
 	if override != "" {
 		return override
+	}
+	if id := edition.Get().AuthClientID; id != "" {
+		return id
 	}
 	// Try loading from persisted app config
 	if id, _ := ResolveAppCredentials(getDefaultConfigDir()); id != "" {
