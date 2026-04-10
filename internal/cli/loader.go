@@ -28,7 +28,60 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/market"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/transport"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
+
+// CatalogDegradedReason identifies why catalog discovery returned empty.
+type CatalogDegradedReason string
+
+const (
+	DegradedUnauthenticated   CatalogDegradedReason = "unauthenticated"
+	DegradedMarketUnreachable CatalogDegradedReason = "market_unreachable"
+	DegradedRuntimeAllFailed  CatalogDegradedReason = "runtime_all_failed"
+)
+
+// CatalogDegraded is returned by EnvironmentLoader.Load when discovery
+// fails for a diagnosable reason. Callers that need graceful degradation
+// (e.g. the runtime runner) can check errors.As and fall back to an
+// empty catalog; callers like the schema command can surface the hint.
+type CatalogDegraded struct {
+	Reason      CatalogDegradedReason
+	Hint        string
+	ServerCount int // number of servers discovered (only set for runtime_all_failed)
+}
+
+func (e *CatalogDegraded) Error() string { return string(e.Reason) + ": " + e.Hint }
+
+func degradedHint(reason CatalogDegradedReason, serverCount int) string {
+	embedded := edition.Get().IsEmbedded
+	switch reason {
+	case DegradedUnauthenticated:
+		if embedded {
+			return "未登录，请重新认证"
+		}
+		return "未登录，无法发现 MCP 服务。请先执行: dws auth login"
+	case DegradedMarketUnreachable:
+		if embedded {
+			return "无法连接 MCP 市场，请检查网络"
+		}
+		return "无法连接 MCP 市场 (mcp.dingtalk.com)，请检查网络"
+	case DegradedRuntimeAllFailed:
+		if embedded {
+			return fmt.Sprintf("已发现 %d 个服务但连接全部失败，请稍后重试", serverCount)
+		}
+		return fmt.Sprintf("已发现 %d 个服务但连接全部失败，请稍后重试或执行: dws cache refresh", serverCount)
+	default:
+		return "MCP 服务发现失败"
+	}
+}
+
+func newCatalogDegraded(reason CatalogDegradedReason, serverCount int) *CatalogDegraded {
+	return &CatalogDegraded{
+		Reason:      reason,
+		Hint:        degradedHint(reason, serverCount),
+		ServerCount: serverCount,
+	}
+}
 
 const (
 	CatalogFixtureEnv    = "DWS_CATALOG_FIXTURE"
@@ -128,15 +181,21 @@ func (l EnvironmentLoader) Load(ctx context.Context) (ir.Catalog, error) {
 	// Startup command construction should not block on synchronous discovery
 	// just because the cache has aged past the short revalidation window.
 	cached := l.loadFromCache(store)
-	if cached.Available {
+	if cached.Available && len(cached.Catalog.Products) > 0 {
 		return cached.Catalog, nil
 	}
 
 	transportClient := transport.NewClient(nil)
+	hasAuth := false
 	if l.AuthTokenFunc != nil {
 		if token := l.AuthTokenFunc(ctx); token != "" {
 			transportClient = transportClient.WithAuth(token, nil)
+			hasAuth = true
 		}
+	}
+
+	if !hasAuth {
+		return ir.Catalog{}, newCatalogDegraded(DegradedUnauthenticated, 0)
 	}
 
 	// Use a bounded context so discovery doesn't hang in test or CI environments.
@@ -157,12 +216,10 @@ func (l EnvironmentLoader) Load(ctx context.Context) (ir.Catalog, error) {
 	}
 	response, err := service.MarketClient.FetchServers(discoverCtx, 200)
 	if err != nil {
-		// Graceful degradation: return empty catalog on discovery failure.
-		// The runtime runner will fall back to EchoRunner for unknown products.
-		if cached.Available {
+		if cached.Available && len(cached.Catalog.Products) > 0 {
 			return cached.Catalog, nil
 		}
-		return ir.Catalog{}, nil
+		return ir.Catalog{}, newCatalogDegraded(DegradedMarketUnreachable, 0)
 	}
 
 	servers := market.NormalizeServers(response, "live_market")
@@ -192,10 +249,10 @@ func (l EnvironmentLoader) Load(ctx context.Context) (ir.Catalog, error) {
 
 	refreshed, failures := service.DiscoverAllRuntime(discoverCtx, toRefresh)
 	if len(unchangedRuntime) == 0 && len(refreshed) == 0 && len(failures) > 0 {
-		if cached.Available {
+		if cached.Available && len(cached.Catalog.Products) > 0 {
 			return cached.Catalog, nil
 		}
-		return ir.Catalog{}, nil
+		return ir.Catalog{}, newCatalogDegraded(DegradedRuntimeAllFailed, len(servers))
 	}
 
 	refreshedByKey := make(map[string]discovery.RuntimeServer, len(refreshed))

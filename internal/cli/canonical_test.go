@@ -1033,6 +1033,83 @@ func newTestMCPCommand(t *testing.T, catalog ir.Catalog, runner executor.Runner)
 	return cmd
 }
 
+func TestSchemaCommandOutputsDegradedOnUnauthenticated(t *testing.T) {
+	t.Parallel()
+
+	degradedErr := &CatalogDegraded{
+		Reason: DegradedUnauthenticated,
+		Hint:   "未登录，无法发现 MCP 服务。请先执行: dws auth login",
+	}
+	cmd := NewSchemaCommand(errorLoader{err: degradedErr})
+
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, want nil (degraded handled gracefully)", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v\noutput:\n%s", err, out.String())
+	}
+	if payload["degraded"] != true {
+		t.Fatalf("payload[degraded] = %v, want true", payload["degraded"])
+	}
+	if payload["reason"] != "unauthenticated" {
+		t.Fatalf("payload[reason] = %v, want unauthenticated", payload["reason"])
+	}
+	if payload["count"] != float64(0) {
+		t.Fatalf("payload[count] = %v, want 0", payload["count"])
+	}
+	if !strings.Contains(errOut.String(), "hint:") {
+		t.Fatalf("stderr = %q, want hint message", errOut.String())
+	}
+}
+
+func TestSchemaCommandOutputsDegradedOnMarketUnreachable(t *testing.T) {
+	t.Parallel()
+
+	degradedErr := &CatalogDegraded{
+		Reason: DegradedMarketUnreachable,
+		Hint:   "无法连接 MCP 市场 (mcp.dingtalk.com)，请检查网络",
+	}
+	cmd := NewSchemaCommand(errorLoader{err: degradedErr})
+
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, want nil", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v\noutput:\n%s", err, out.String())
+	}
+	if payload["reason"] != "market_unreachable" {
+		t.Fatalf("payload[reason] = %v, want market_unreachable", payload["reason"])
+	}
+}
+
+func TestSchemaCommandPropagatesNonDegradedError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("unexpected failure")
+	cmd := NewSchemaCommand(errorLoader{err: wantErr})
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Execute() error = %v, want %v", err, wantErr)
+	}
+}
+
 type errorLoader struct {
 	err error
 }

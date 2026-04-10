@@ -121,6 +121,25 @@ func NewSchemaCommand(loader CatalogLoader) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			catalog, err := loader.Load(cmd.Context())
 			if err != nil {
+				var degraded *CatalogDegraded
+				if errors.As(err, &degraded) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "hint: %s\n", degraded.Hint)
+					payload := map[string]any{
+						"kind":     "schema",
+						"count":    0,
+						"products": []any{},
+						"degraded": true,
+						"reason":   string(degraded.Reason),
+						"hint":     degraded.Hint,
+					}
+					return output.WriteFiltered(
+						cmd.OutOrStdout(),
+						output.ResolveFormat(cmd, output.FormatJSON),
+						payload,
+						output.ResolveFields(cmd),
+						output.ResolveJQ(cmd),
+					)
+				}
 				return err
 			}
 

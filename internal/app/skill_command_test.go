@@ -563,8 +563,10 @@ func TestSkillCommandHelp(t *testing.T) {
 	if !strings.Contains(output, "技能") {
 		t.Errorf("help should mention '技能', got: %s", output)
 	}
-	if !strings.Contains(output, "add") {
-		t.Errorf("help should mention 'add' subcommand, got: %s", output)
+	for _, subcmd := range []string{"add", "find", "get"} {
+		if !strings.Contains(output, subcmd) {
+			t.Errorf("help should mention %q subcommand, got: %s", subcmd, output)
+		}
 	}
 }
 
@@ -587,6 +589,56 @@ func TestSkillAddCommandHelp(t *testing.T) {
 		if !strings.Contains(output, target) {
 			t.Errorf("help should mention target '%s', got: %s", target, output)
 		}
+	}
+}
+
+func TestSkillGetCommandValidation(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"skill", "get"})
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing required flag error")
+	}
+	if !strings.Contains(err.Error(), "required flag") {
+		t.Fatalf("error = %v, want required flag message", err)
+	}
+}
+
+func TestSkillFindCommandValidation(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"skill", "find"})
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing required flag error")
+	}
+	if !strings.Contains(err.Error(), "required flag") {
+		t.Fatalf("error = %v, want required flag message", err)
+	}
+}
+
+func TestSkillSearchHintCommand(t *testing.T) {
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"skill", "search"})
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "dws skill find --context") {
+		t.Fatalf("output = %q, want legacy hint", out.String())
 	}
 }
 

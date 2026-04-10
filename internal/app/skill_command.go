@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +33,8 @@ import (
 )
 
 const (
+	// legacySkillAPIHost is the legacy skill market host used by the old cli.
+	legacySkillAPIHost = "https://mcp.dingtalk.com"
 	// skillDownloadEndpoint is the API endpoint for downloading skills.
 	skillDownloadEndpoint = "https://aihub.dingtalk.com/cli/download"
 	// skillDownloadTimeout is the timeout for skill download operations.
@@ -49,6 +53,22 @@ type downloadSkillResponse struct {
 type downloadSkillResult struct {
 	DownloadURL string `json:"downloadUrl"`
 	FileName    string `json:"fileName"`
+}
+
+// findSkillsResponse represents the legacy skill search API response.
+type findSkillsResponse struct {
+	Success   bool          `json:"success"`
+	ErrorCode string        `json:"errorCode,omitempty"`
+	ErrorMsg  string        `json:"errorMsg,omitempty"`
+	Result    []CliSkillDTO `json:"result,omitempty"`
+}
+
+// CliSkillDTO mirrors the old cli response payload for `skill find`.
+type CliSkillDTO struct {
+	SkillID string `json:"skillId"`
+	Name    string `json:"name"`
+	Desc    string `json:"desc"`
+	Icon    string `json:"icon"`
 }
 
 // agentSkillPaths maps target names to their relative skill installation paths.
@@ -75,7 +95,7 @@ func buildSkillCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "skill",
 		Short:             "技能管理",
-		Long:              "管理钉钉技能市场的技能。支持下载和安装技能到指定 Agent 目录。",
+		Long:              "管理钉钉技能市场的技能。支持搜索、下载与安装到指定 Agent 目录。",
 		Args:              cobra.NoArgs,
 		TraverseChildren:  true,
 		DisableAutoGenTag: true,
@@ -84,8 +104,54 @@ func buildSkillCommand() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newSkillAddCommand())
+	cmd.AddCommand(
+		newSkillAddCommand(),
+		newSkillGetCommand(),
+		newSkillFindCommand(),
+		newSkillSearchHintCommand(),
+	)
 	return cmd
+}
+
+func newSkillGetCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:               "get",
+		Short:             "获取技能压缩文件",
+		Long:              "从服务端下载技能包到本地临时目录。命令执行成功后会输出临时目录路径，供调用方使用。",
+		Example:           "  dws skill get --skill-id <skillId>",
+		DisableAutoGenTag: true,
+		RunE:              runSkillGet,
+	}
+	cmd.Flags().String("skill-id", "", "技能 ID（必填）")
+	_ = cmd.MarkFlagRequired("skill-id")
+	return cmd
+}
+
+func newSkillFindCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:               "find",
+		Short:             "从钉钉技能市场搜索技能",
+		Long:              "从钉钉技能市场搜索技能，根据关键词返回匹配的技能列表。",
+		Example:           "  dws skill find --context 关键词",
+		DisableAutoGenTag: true,
+		RunE:              runSkillFind,
+	}
+	cmd.Flags().String("context", "", "搜索关键词（必填）")
+	_ = cmd.MarkFlagRequired("context")
+	return cmd
+}
+
+func newSkillSearchHintCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:               "search",
+		Short:             "兼容旧用法，提示使用 skill find",
+		Hidden:            true,
+		DisableAutoGenTag: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "use: dws skill find --context <关键词>")
+			return nil
+		},
+	}
 }
 
 func newSkillAddCommand() *cobra.Command {
@@ -118,6 +184,79 @@ func newSkillAddCommand() *cobra.Command {
 	return cmd
 }
 
+func runSkillGet(cmd *cobra.Command, args []string) error {
+	skillID, _ := cmd.Flags().GetString("skill-id")
+	accessToken, err := loadSkillAccessToken()
+	if err != nil {
+		return err
+	}
+
+	apiURL := fmt.Sprintf("%s/cli/install?skillId=%s", skillAPIHost(), url.QueryEscape(strings.TrimSpace(skillID)))
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "⬇️  下载技能包...")
+
+	tmpDir, err := downloadSkillToTmpDir(cmd.Context(), apiURL, accessToken)
+	if err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), tmpDir)
+	return nil
+}
+
+func runSkillFind(cmd *cobra.Command, args []string) error {
+	keyword, _ := cmd.Flags().GetString("context")
+	accessToken, err := loadSkillAccessToken()
+	if err != nil {
+		return err
+	}
+
+	apiURL := fmt.Sprintf("%s/cli/find-skills?keyword=%s", skillAPIHost(), url.QueryEscape(strings.TrimSpace(keyword)))
+	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, apiURL, nil)
+	if err != nil {
+		return apperrors.NewInternal(fmt.Sprintf("failed to create request: %v", err))
+	}
+	req.Header.Set("x-user-access-token", accessToken)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return apperrors.NewAPI(fmt.Sprintf("failed to search skills: %v", err), apperrors.WithRetryable(true))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return parseLegacySkillAPIError(resp)
+	}
+
+	var result findSkillsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return apperrors.NewAPI(fmt.Sprintf("failed to parse search response: %v", err))
+	}
+	if !result.Success {
+		errMsg := strings.TrimSpace(result.ErrorMsg)
+		if errMsg == "" {
+			errMsg = strings.TrimSpace(result.ErrorCode)
+		}
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		return apperrors.NewAPI(fmt.Sprintf("failed to search skills: %s", errMsg))
+	}
+
+	if len(result.Result) == 0 {
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "未找到匹配的技能")
+		return nil
+	}
+
+	for _, skill := range result.Result {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "SkillID: %s\n", skill.SkillID)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Name: %s\n", skill.Name)
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Desc: %s\n", skill.Desc)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "---")
+	}
+	return nil
+}
+
 func runSkillAdd(cmd *cobra.Command, args []string) error {
 	skillID := strings.TrimSpace(args[0])
 	target := strings.TrimSpace(args[1])
@@ -132,13 +271,9 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 		return apperrors.NewValidation(fmt.Sprintf("invalid target '%s': %v. Supported targets: %s", target, err, supportedTargets()))
 	}
 
-	// Load auth token
-	configDir := defaultConfigDir()
-	tokenData, err := authpkg.LoadTokenData(configDir)
-	if err != nil || tokenData == nil || !tokenData.IsAccessTokenValid() {
-		return apperrors.NewAuth("not logged in or token expired. Please run 'dws auth login' first",
-			apperrors.WithHint("请先执行 'dws auth login' 登录"),
-			apperrors.WithActions("dws auth login"))
+	accessToken, err := loadSkillAccessToken()
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(cmd.Context(), skillDownloadTimeout)
@@ -148,7 +283,7 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 
 	// Step 1: Get download URL from API
 	fmt.Fprintf(w, "正在获取技能信息...\n")
-	downloadResp, err := fetchSkillDownloadInfo(ctx, tokenData.AccessToken, skillID)
+	downloadResp, err := fetchSkillDownloadInfo(ctx, accessToken, skillID)
 	if err != nil {
 		return err
 	}
@@ -187,6 +322,24 @@ func runSkillAdd(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(w, "安装路径: %s\n", destPath)
 
 	return nil
+}
+
+func loadSkillAccessToken() (string, error) {
+	configDir := defaultConfigDir()
+	tokenData, err := authpkg.LoadTokenData(configDir)
+	if err != nil || tokenData == nil || !tokenData.IsAccessTokenValid() {
+		return "", apperrors.NewAuth("not logged in or token expired. Please run 'dws auth login' first",
+			apperrors.WithHint("请先执行 'dws auth login' 登录"),
+			apperrors.WithActions("dws auth login"))
+	}
+	return tokenData.AccessToken, nil
+}
+
+func skillAPIHost() string {
+	if override := strings.TrimSpace(os.Getenv("DWS_SKILL_API_HOST")); override != "" {
+		return strings.TrimRight(override, "/")
+	}
+	return legacySkillAPIHost
 }
 
 // resolveSkillTargetPath resolves the target argument to an absolute path.
@@ -257,6 +410,72 @@ func fetchSkillDownloadInfo(ctx context.Context, accessToken, skillID string) (*
 	}
 
 	return &result, nil
+}
+
+func downloadSkillToTmpDir(ctx context.Context, apiURL, accessToken string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", apperrors.NewInternal(fmt.Sprintf("failed to create request: %v", err))
+	}
+	req.Header.Set("x-user-access-token", accessToken)
+
+	client := &http.Client{Timeout: skillDownloadTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", apperrors.NewAPI(fmt.Sprintf("failed to download skill package: %v", err), apperrors.WithRetryable(true))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", parseLegacySkillAPIError(resp)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "dws-skill-*")
+	if err != nil {
+		return "", apperrors.NewInternal(fmt.Sprintf("failed to create temp dir: %v", err))
+	}
+
+	filename := filenameFromDisposition(resp.Header.Get("Content-Disposition"))
+	destPath := filepath.Join(tmpDir, filename)
+	file, err := os.Create(destPath)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return "", apperrors.NewInternal(fmt.Sprintf("failed to create temp file: %v", err))
+	}
+	defer file.Close()
+
+	if _, err := io.Copy(file, resp.Body); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", apperrors.NewAPI(fmt.Sprintf("failed to save downloaded file: %v", err))
+	}
+	return tmpDir, nil
+}
+
+func filenameFromDisposition(cd string) string {
+	if cd != "" {
+		if _, params, err := mime.ParseMediaType(cd); err == nil {
+			if name := strings.TrimSpace(params["filename"]); name != "" {
+				return name
+			}
+		}
+	}
+	return "skill.zip"
+}
+
+func parseLegacySkillAPIError(resp *http.Response) error {
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return apperrors.NewAuth("authentication failed. Please run 'dws auth login' to refresh your token",
+			apperrors.WithHint("请执行 'dws auth login' 重新登录"),
+			apperrors.WithActions("dws auth login"))
+	case http.StatusBadRequest:
+		return apperrors.NewValidation("request parameters are invalid")
+	case http.StatusNotFound:
+		return apperrors.NewValidation("skill does not exist or corresponding file was not found")
+	default:
+		return apperrors.NewAPI(fmt.Sprintf("skill API returned HTTP %d", resp.StatusCode),
+			apperrors.WithRetryable(resp.StatusCode >= 500))
+	}
 }
 
 // downloadSkillFile downloads the skill zip file to a temporary location.
