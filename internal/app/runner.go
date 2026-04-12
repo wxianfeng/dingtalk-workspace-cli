@@ -33,8 +33,50 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/logging"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/safety"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/transport"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/configmeta"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
+
+func init() {
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DWS_RUNTIME_CONTENT_SCAN",
+		Category:    configmeta.CategoryRuntime,
+		Description: "启用 MCP 响应内容安全扫描",
+		Example:     "true",
+	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DWS_RUNTIME_CONTENT_SCAN_ENFORCE",
+		Category:    configmeta.CategoryRuntime,
+		Description: "内容安全扫描发现问题时阻断响应",
+		Example:     "true",
+	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DWS_RUNTIME_CONTENT_SCAN_REPORT",
+		Category:    configmeta.CategoryRuntime,
+		Description: "在 JSON 输出中包含安全扫描报告",
+		Example:     "true",
+	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DINGTALK_AGENT",
+		Category:    configmeta.CategoryExternal,
+		Description: "MCP 请求 x-dingtalk-agent 头",
+	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DINGTALK_TRACE_ID",
+		Category:    configmeta.CategoryExternal,
+		Description: "MCP 请求 x-dingtalk-trace-id 头",
+	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DINGTALK_SESSION_ID",
+		Category:    configmeta.CategoryExternal,
+		Description: "MCP 请求 x-dingtalk-session-id 头",
+	})
+	configmeta.Register(configmeta.ConfigItem{
+		Name:        "DINGTALK_MESSAGE_ID",
+		Category:    configmeta.CategoryExternal,
+		Description: "MCP 请求 x-dingtalk-message-id 头",
+	})
+}
 
 const (
 	runtimeContentScanEnv             = "DWS_RUNTIME_CONTENT_SCAN"

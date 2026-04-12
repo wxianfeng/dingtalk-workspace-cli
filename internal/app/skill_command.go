@@ -29,8 +29,19 @@ import (
 
 	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
 	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/configmeta"
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	configmeta.Register(configmeta.ConfigItem{
+		Name:         "DWS_SKILL_API_HOST",
+		Category:     configmeta.CategoryNetwork,
+		Description:  "覆盖 Skill API 地址",
+		DefaultValue: "https://mcp.dingtalk.com",
+		Example:      "https://custom-mcp.example.com",
+	})
+}
 
 const (
 	// legacySkillAPIHost is the legacy skill market host used by the old cli.
