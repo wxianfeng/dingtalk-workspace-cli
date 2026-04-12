@@ -60,6 +60,7 @@ func newDoctorCommand() *cobra.Command {
 	}
 	cmd.Flags().Bool("json", false, "以 JSON 格式输出")
 	cmd.Flags().Int("timeout", 10, "网络检查超时时间 (秒)")
+	cmd.Flags().Bool("perf", false, "额外展示最近一次性能报告")
 	return cmd
 }
 
@@ -86,10 +87,16 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	versionResult := doctorCheckVersion(w, jsonOut, networkTimeout)
 	checks = append(checks, versionResult)
 
+	showPerf, _ := cmd.Flags().GetBool("perf")
+	if showPerf {
+		perfResult := doctorCheckPerf(w, jsonOut)
+		checks = append(checks, perfResult)
+	}
+
 	pass, warn, fail := countResults(checks)
 
 	if jsonOut {
-		return output.WriteJSON(w, map[string]any{
+		result := map[string]any{
 			"kind":   "doctor",
 			"checks": checks,
 			"summary": map[string]int{
@@ -97,7 +104,13 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 				"warn": warn,
 				"fail": fail,
 			},
-		})
+		}
+		if showPerf {
+			if report, err := LoadLatestReport(); err == nil {
+				result["perf_report"] = report
+			}
+		}
+		return output.WriteJSON(w, result)
 	}
 
 	fmt.Fprintf(w, "\n诊断完成: %d 项通过, %d 项警告, %d 项失败\n", pass, warn, fail)
@@ -367,6 +380,54 @@ func countResults(checks []checkResult) (pass, warn, fail int) {
 		}
 	}
 	return
+}
+
+// ── Perf report check ──────────────────────────────────────────────────
+
+func doctorCheckPerf(w io.Writer, jsonOut bool) checkResult {
+	if !jsonOut {
+		fmt.Fprint(w, "检查性能报告...       ")
+	}
+
+	report, err := LoadLatestReport()
+	if err != nil {
+		r := checkResult{
+			Name:    "perf",
+			Status:  statusWarn,
+			Message: "未找到性能报告",
+			Hint:    "设置 DWS_PERF_REPORT=auto 后运行任意命令生成报告",
+		}
+		if !jsonOut {
+			printCheckResult(w, r)
+		}
+		return r
+	}
+
+	r := checkResult{
+		Name:    "perf",
+		Status:  statusPass,
+		Message: fmt.Sprintf("报告可用 (%s, %s)", report.Command, report.Timestamp.Local().Format("2006-01-02 15:04")),
+	}
+	if !jsonOut {
+		printCheckResult(w, r)
+		printPerfReportSummary(w, report)
+	}
+	return r
+}
+
+func printPerfReportSummary(w io.Writer, report *PerfReport) {
+	fmt.Fprintf(w, "\n最近一次性能报告 (%s, %s):\n",
+		report.Command, report.Timestamp.Local().Format("2006-01-02 15:04"))
+
+	for _, p := range report.Phases {
+		marker := ""
+		if p.Name == report.Slowest {
+			marker = "  ← 最慢"
+		}
+		fmt.Fprintf(w, "  %-25s %dms%s\n", p.Name, p.DurationMs, marker)
+	}
+	fmt.Fprintf(w, "  %-25s ─────────\n", "─────────────────────────")
+	fmt.Fprintf(w, "  %-25s %dms  (框架开销 %dms)\n", "总耗时", report.TotalMs, report.OverheadMs)
 }
 
 func formatLocalTime(t time.Time) string {

@@ -54,7 +54,10 @@ const recoveryEventStderrPrefix = "RECOVERY_EVENT_ID="
 // Execute runs the root command and returns the process exit code.
 func Execute() int {
 	timing := NewTimingCollector()
-	defer func() { timing.PrintIfEnabled() }()
+	defer func() {
+		timing.PrintIfEnabled()
+		timing.WriteReportIfEnabled(RawVersion(), SanitizeCommand(os.Args))
+	}()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
