@@ -38,6 +38,7 @@ const (
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	Headers    map[string]string
 }
 
 type ListResponse struct {
@@ -254,6 +255,9 @@ func (c *Client) FetchServersFromURL(ctx context.Context, fullURL string) (ListR
 	if err != nil {
 		return ListResponse{}, apperrors.NewDiscovery("failed to create servers request")
 	}
+	for k, v := range c.Headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return ListResponse{}, apperrors.NewDiscovery(fmt.Sprintf("servers request failed: %v", err))
@@ -286,6 +290,9 @@ func (c *Client) fetchServersPage(ctx context.Context, limit int, cursor string)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL.String(), nil)
 	if err != nil {
 		return ListResponse{}, apperrors.NewDiscovery("failed to create market servers request")
+	}
+	for k, v := range c.Headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {

@@ -93,6 +93,27 @@ type Hooks struct {
 	VisibleProducts       func() []string                              // non-nil → override help visibility
 	RegisterExtraCommands func(root *cobra.Command, caller ToolCaller) // register overlay-only commands
 
+	// --- discovery ---
+
+	// DiscoveryURL overrides the Market API endpoint for server list.
+	// Non-empty → loadDynamicCommands uses FetchServersFromURL(DiscoveryURL)
+	// instead of the default Market base URL. Provides edition-level isolation.
+	DiscoveryURL string
+
+	// DiscoveryHeaders returns HTTP headers injected into discovery requests.
+	// Used to authenticate edition-specific endpoints.
+	DiscoveryHeaders func() map[string]string
+
+	// SupplementServers returns edition-specific MCP servers NOT registered
+	// in any Market registry. Always merged into the endpoint map alongside
+	// Market/cache results, regardless of discovery success or failure.
+	SupplementServers func() []ServerInfo
+
+	// FallbackServers returns the full server list as a safety net when
+	// Market discovery + cache both fail. Results are NOT cached so the
+	// next startup still attempts live discovery.
+	FallbackServers func() []ServerInfo
+
 	// AfterPersistentPreRun runs at the end of the root PersistentPreRunE after
 	// global setup (OAuth flag overrides, log level, output sink). Overlays use
 	// this for clients that bypass the MCP runner (e.g. A2A gateway).

@@ -87,9 +87,58 @@ func injectStaticServers(servers []edition.ServerInfo) {
 //
 // Tests may override discoveryBaseURLOverride to redirect to a local server;
 // in that case the registry cache is always bypassed.
+// editionPartition returns the cache partition for the active edition.
+// Each edition gets its own partition to prevent cross-edition data leakage.
+func editionPartition() string {
+	name := edition.Get().Name
+	if name == "" || name == "open" {
+		return config.DefaultPartition
+	}
+	return name + "/default"
+}
+
+// discoveryTraceEnabled reports whether the user asked for discovery-path diagnostics.
+// loadDynamicCommands runs while building the command tree, before PersistentPreRun
+// applies --debug to slog; we also accept argv --debug and DWS_PERF_DEBUG for consistency.
+func discoveryTraceEnabled() bool {
+	if IsPerfDebugEnabled() {
+		return true
+	}
+	for _, a := range os.Args[1:] {
+		if a == "--debug" {
+			return true
+		}
+	}
+	return false
+}
+
+func discoveryTraceServerIDs(servers []market.ServerDescriptor) []string {
+	seen := make(map[string]struct{})
+	for _, s := range servers {
+		id := strings.TrimSpace(s.CLI.Command)
+		if id == "" {
+			id = strings.TrimSpace(s.CLI.ID)
+		}
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	const maxIDs = 48
+	if len(out) > maxIDs {
+		out = out[:maxIDs]
+	}
+	return out
+}
+
 func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.Command {
 	store := cacheStoreFromEnv()
-	partition := config.DefaultPartition
+	partition := editionPartition()
 
 	// Bypass the registry cache when a fixture override is active.
 	// This ensures tests that set DWS_CATALOG_FIXTURE always get fresh
@@ -116,27 +165,71 @@ func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.C
 		}
 	}
 
+	if len(servers) > 0 && discoveryTraceEnabled() {
+		slog.Info("loadDynamicCommands: skipping sync discovery fetch, using registry cache",
+			"partition", partition,
+			"servers", len(servers),
+			"registry_freshness", string(freshness))
+	}
+
 	// Cache miss or bypassed: fetch from market API synchronously (first run only).
 	if len(servers) == 0 {
-		baseURL := cli.DefaultMarketBaseURL
-		if discoveryBaseURLOverride != "" {
-			baseURL = discoveryBaseURLOverride
+		if discoveryTraceEnabled() {
+			if edURL := strings.TrimSpace(edition.Get().DiscoveryURL); edURL != "" {
+				slog.Info("loadDynamicCommands: sync discovery fetch", "partition", partition, "url", edURL)
+			} else {
+				baseURL := cli.DefaultMarketBaseURL
+				if discoveryBaseURLOverride != "" {
+					baseURL = discoveryBaseURLOverride
+				}
+				slog.Info("loadDynamicCommands: sync market catalog fetch", "partition", partition, "base_url", baseURL)
+			}
 		}
 		fetchStart := time.Now()
-		client := market.NewClient(baseURL, ipv4OnlyHTTPClient())
-		resp, fetchErr := client.FetchServers(ctx, config.DefaultFetchServersLimit)
+
+		var resp market.ListResponse
+		var fetchErr error
+
+		if editionURL := edition.Get().DiscoveryURL; editionURL != "" {
+			client := market.NewClient("", ipv4OnlyHTTPClient())
+			if fn := edition.Get().DiscoveryHeaders; fn != nil {
+				client.Headers = fn()
+			}
+			resp, fetchErr = client.FetchServersFromURL(ctx, editionURL)
+		} else {
+			baseURL := cli.DefaultMarketBaseURL
+			if discoveryBaseURLOverride != "" {
+				baseURL = discoveryBaseURLOverride
+			}
+			client := market.NewClient(baseURL, ipv4OnlyHTTPClient())
+			resp, fetchErr = client.FetchServers(ctx, config.DefaultFetchServersLimit)
+		}
+
 		RecordTiming(ctx, "market_fetch", time.Since(fetchStart))
 		if fetchErr != nil {
+			if discoveryTraceEnabled() {
+				slog.Info("loadDynamicCommands: sync discovery fetch failed",
+					"partition", partition,
+					"error", fetchErr.Error())
+			}
 			slog.Debug("loadDynamicCommands: market API fetch failed", "error", fetchErr)
 			// Degrade to stale cache if available (production only).
 			if useCache && cacheErr == nil && len(snapshot.Servers) > 0 {
 				slog.Debug("loadDynamicCommands: degrading to stale registry cache", "servers", len(snapshot.Servers))
 				servers = snapshot.Servers
 			} else {
-				return nil
+				// no-op: fall through to FallbackServers check below
 			}
 		} else {
 			servers = market.NormalizeServers(resp, "market")
+			if discoveryTraceEnabled() {
+				slog.Info("loadDynamicCommands: sync discovery fetch ok",
+					"partition", partition,
+					"response_servers", len(resp.Servers),
+					"metadata_count", resp.Metadata.Count,
+					"normalized_servers", len(servers),
+					"cli_command_ids", discoveryTraceServerIDs(servers))
+			}
 			// Persist fresh data (only in non-test mode).
 			if useCache {
 				saveStart := time.Now()
@@ -148,9 +241,22 @@ func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.C
 		}
 	}
 
+	// FallbackServers: safety net when Market discovery + cache both fail.
 	if len(servers) == 0 {
+		if fn := edition.Get().FallbackServers; fn != nil {
+			if fb := fn(); len(fb) > 0 {
+				slog.Debug("loadDynamicCommands: using FallbackServers", "count", len(fb))
+				descriptors := fallbackToDescriptors(fb)
+				descriptors = mergeSupplementServers(descriptors)
+				SetDynamicServers(descriptors)
+				return nil
+			}
+		}
 		return nil
 	}
+
+	// Merge edition-specific supplement servers (not in Market).
+	servers = mergeSupplementServers(servers)
 	// Inject dynamic server data for endpoint resolution
 	SetDynamicServers(servers)
 
@@ -172,7 +278,7 @@ func loadCachedDetailsFast(store *cache.Store, servers []market.ServerDescriptor
 	if store == nil {
 		return result
 	}
-	partition := config.DefaultPartition
+	partition := editionPartition()
 	for _, server := range servers {
 		if server.DetailLocator.MCPID <= 0 {
 			continue
@@ -203,7 +309,7 @@ func fetchDetailsByServerID(ctx context.Context, client *market.Client, servers 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	partition := config.DefaultPartition
+	partition := editionPartition()
 	now := time.Now().UTC()
 	if store != nil && store.Now != nil {
 		now = store.Now().UTC()
@@ -355,9 +461,21 @@ func asyncRevalidateRegistry(parent context.Context, store *cache.Store, partiti
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 
-	baseURL := DiscoveryBaseURL()
-	client := market.NewClient(baseURL, ipv4OnlyHTTPClient())
-	resp, err := client.FetchServers(ctx, config.DefaultFetchServersLimit)
+	var resp market.ListResponse
+	var err error
+
+	if editionURL := edition.Get().DiscoveryURL; editionURL != "" {
+		client := market.NewClient("", ipv4OnlyHTTPClient())
+		if fn := edition.Get().DiscoveryHeaders; fn != nil {
+			client.Headers = fn()
+		}
+		resp, err = client.FetchServersFromURL(ctx, editionURL)
+	} else {
+		baseURL := DiscoveryBaseURL()
+		client := market.NewClient(baseURL, ipv4OnlyHTTPClient())
+		resp, err = client.FetchServers(ctx, config.DefaultFetchServersLimit)
+	}
+
 	if err != nil {
 		slog.Debug("asyncRevalidateRegistry: fetch failed", "error", err)
 		return
@@ -397,4 +515,51 @@ func mergeTopLevelCommands(commands []*cobra.Command) []*cobra.Command {
 		return out[i].Use < out[j].Use
 	})
 	return out
+}
+
+// mergeSupplementServers appends edition-specific servers (not in Market)
+// into the discovery result. Existing IDs from Market/cache take precedence.
+func mergeSupplementServers(servers []market.ServerDescriptor) []market.ServerDescriptor {
+	fn := edition.Get().SupplementServers
+	if fn == nil {
+		return servers
+	}
+	existing := make(map[string]bool, len(servers))
+	for _, s := range servers {
+		existing[s.CLI.ID] = true
+		existing[s.Key] = true
+	}
+	for _, sup := range fn() {
+		if !existing[sup.ID] {
+			servers = append(servers, market.ServerDescriptor{
+				Key:         sup.ID,
+				DisplayName: sup.Name,
+				Endpoint:    sup.Endpoint,
+				CLI: market.CLIOverlay{
+					ID:       sup.ID,
+					Command:  sup.ID,
+					Prefixes: sup.Prefixes,
+				},
+			})
+		}
+	}
+	return servers
+}
+
+// fallbackToDescriptors converts edition.ServerInfo into market.ServerDescriptor.
+func fallbackToDescriptors(servers []edition.ServerInfo) []market.ServerDescriptor {
+	descriptors := make([]market.ServerDescriptor, 0, len(servers))
+	for _, s := range servers {
+		descriptors = append(descriptors, market.ServerDescriptor{
+			Key:         s.ID,
+			DisplayName: s.Name,
+			Endpoint:    s.Endpoint,
+			CLI: market.CLIOverlay{
+				ID:       s.ID,
+				Command:  s.ID,
+				Prefixes: s.Prefixes,
+			},
+		})
+	}
+	return descriptors
 }
