@@ -28,7 +28,7 @@ func TestLogRequestWritesStructuredEntry(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	LogRequest(logger, "tools/call", "https://mcp.dingtalk.com/api?token=secret", "exec-123", 256)
+	LogRequest(logger, "tools/call", "https://pre-mcp.dingtalk.com/api?token=secret", "exec-123", 256)
 
 	out := buf.String()
 	if !strings.Contains(out, "jsonrpc_request") {
@@ -52,7 +52,7 @@ func TestLogResponseSuccess(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	LogResponse(logger, "tools/call", "https://mcp.dingtalk.com/api", "exec-1", 200, 1024, 150*time.Millisecond, nil)
+	LogResponse(logger, "tools/call", "https://pre-mcp.dingtalk.com/api", "exec-1", 200, 1024, 150*time.Millisecond, nil)
 
 	out := buf.String()
 	if !strings.Contains(out, "jsonrpc_response") {
@@ -72,7 +72,7 @@ func TestLogResponseError(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	LogResponse(logger, "initialize", "https://mcp.dingtalk.com", "exec-2", 500, 0, 2*time.Second, errors.New("connection refused"))
+	LogResponse(logger, "initialize", "https://pre-mcp.dingtalk.com", "exec-2", 500, 0, 2*time.Second, errors.New("connection refused"))
 
 	out := buf.String()
 	if !strings.Contains(out, "WARN") {
@@ -185,9 +185,9 @@ func TestRedactEndpoint(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"https://mcp.dingtalk.com/api", "https://mcp.dingtalk.com/api"},
-		{"https://mcp.dingtalk.com/api?token=abc", "https://mcp.dingtalk.com/api"},
-		{"https://mcp.dingtalk.com/api#section", "https://mcp.dingtalk.com/api"},
+		{"https://pre-mcp.dingtalk.com/api", "https://pre-mcp.dingtalk.com/api"},
+		{"https://pre-mcp.dingtalk.com/api?token=abc", "https://pre-mcp.dingtalk.com/api"},
+		{"https://pre-mcp.dingtalk.com/api#section", "https://pre-mcp.dingtalk.com/api"},
 		{"", ""},
 	}
 

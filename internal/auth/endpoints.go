@@ -82,7 +82,7 @@ const (
 	LogoutContinueURL = "https://login.dingtalk.com"
 
 	// MCP API endpoints for CLI authorization management.
-	DefaultMCPBaseURL    = "https://mcp.dingtalk.com"
+	DefaultMCPBaseURL = "https://pre-mcp.dingtalk.com"
 	CLIAuthEnabledPath   = "/cli/cliAuthEnabled"
 	SuperAdminPath       = "/cli/superAdmin"
 	SendCliAuthApplyPath = "/cli/sendCliAuthApply"
@@ -95,8 +95,8 @@ const (
 )
 
 // GetMCPBaseURL returns the MCP base URL with priority:
-// 1. ~/.dws/mcp_url file content (for pre-release environment)
-// 2. Default value (https://mcp.dingtalk.com)
+// 1. ~/.dws/mcp_url file content (override)
+// 2. Default value (https://pre-mcp.dingtalk.com)
 func GetMCPBaseURL() string {
 	mcpURLPath := filepath.Join(getDefaultConfigDir(), "mcp_url")
 	if data, err := os.ReadFile(mcpURLPath); err == nil {

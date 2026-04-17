@@ -34,7 +34,7 @@ func TestIsStdioEndpoint(t *testing.T) {
 	}{
 		{"stdio://hello-plugin/hello", true},
 		{"stdio://conference/local", true},
-		{"https://mcp.dingtalk.com", false},
+		{"https://pre-mcp.dingtalk.com", false},
 		{"", false},
 	}
 	for _, tt := range tests {

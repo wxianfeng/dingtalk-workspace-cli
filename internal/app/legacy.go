@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cache"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cli"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cobracmd"
@@ -118,10 +119,7 @@ func loadDynamicCommands(ctx context.Context, runner executor.Runner) []*cobra.C
 
 	// Cache miss or bypassed: fetch from market API synchronously (first run only).
 	if len(servers) == 0 {
-		baseURL := cli.DefaultMarketBaseURL
-		if discoveryBaseURLOverride != "" {
-			baseURL = discoveryBaseURLOverride
-		}
+		baseURL := DiscoveryBaseURL()
 		fetchStart := time.Now()
 		client := market.NewClient(baseURL, ipv4OnlyHTTPClient())
 		resp, fetchErr := client.FetchServers(ctx, config.DefaultFetchServersLimit)
@@ -325,12 +323,13 @@ func SetDiscoveryBaseURL(url string) {
 }
 
 // DiscoveryBaseURL returns the effective base URL for discovery —
-// discoveryBaseURLOverride if set, otherwise DefaultMarketBaseURL.
+// discoveryBaseURLOverride if set (tests), otherwise auth.GetMCPBaseURL()
+// (~/.dws/mcp_url override, else DefaultMCPBaseURL).
 func DiscoveryBaseURL() string {
 	if discoveryBaseURLOverride != "" {
 		return discoveryBaseURLOverride
 	}
-	return cli.DefaultMarketBaseURL
+	return authpkg.GetMCPBaseURL()
 }
 
 // ipv4OnlyHTTPClient returns an HTTP client that forces IPv4 connections

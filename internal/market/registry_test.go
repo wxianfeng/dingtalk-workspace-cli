@@ -239,7 +239,7 @@ func TestFetchServersFollowsNextCursor(t *testing.T) {
 func TestFetchDetailByURLRejectsUnsafeTargets(t *testing.T) {
 	t.Parallel()
 
-	client := NewClient("https://mcp.dingtalk.com", nil)
+	client := NewClient("https://pre-mcp.dingtalk.com", nil)
 
 	// Private IP — should be rejected
 	_, err := client.FetchDetailByURL(context.Background(), "https://127.0.0.1/detail")

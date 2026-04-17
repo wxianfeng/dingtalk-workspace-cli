@@ -45,7 +45,7 @@ func marketListResponse(cliID string) map[string]any {
 					"remotes": []any{
 						map[string]any{
 							"type": "streamable-http",
-							"url":  "https://mcp.dingtalk.com/test/v1",
+							"url":  "https://pre-mcp.dingtalk.com/test/v1",
 						},
 					},
 				},
@@ -86,7 +86,7 @@ func marketListResponseForSpecs(specs ...testCLIServerSpec) map[string]any {
 				"remotes": []any{
 					map[string]any{
 						"type": "streamable-http",
-						"url":  "https://mcp.dingtalk.com/" + spec.command + "/v1",
+						"url":  "https://pre-mcp.dingtalk.com/" + spec.command + "/v1",
 					},
 				},
 			},
@@ -154,7 +154,7 @@ func TestLoadDynamicCommandsUsesFreshCacheWithoutNetwork(t *testing.T) {
 	store := cache.NewStore(cacheDir)
 	err := store.SaveRegistry("default/default", cache.RegistrySnapshot{
 		SavedAt: time.Now().UTC(), // fresh
-		Servers: []market.ServerDescriptor{minimalCLIServer("cached", "https://mcp.dingtalk.com/cached/v1")},
+		Servers: []market.ServerDescriptor{minimalCLIServer("cached", "https://pre-mcp.dingtalk.com/cached/v1")},
 	})
 	if err != nil {
 		t.Fatalf("SaveRegistry() error = %v", err)
@@ -194,7 +194,7 @@ func TestLoadDynamicCommandsUsesStaleCacheOnStartup(t *testing.T) {
 	store := cache.NewStore(cacheDir)
 	err := store.SaveRegistry("default/default", cache.RegistrySnapshot{
 		SavedAt: time.Now().UTC().Add(-25 * time.Hour), // older than RegistryTTL=24h
-		Servers: []market.ServerDescriptor{minimalCLIServer("stale", "https://mcp.dingtalk.com/stale/v1")},
+		Servers: []market.ServerDescriptor{minimalCLIServer("stale", "https://pre-mcp.dingtalk.com/stale/v1")},
 	})
 	if err != nil {
 		t.Fatalf("SaveRegistry() error = %v", err)
@@ -260,7 +260,7 @@ func TestLoadDynamicCommandsFallsBackToStaleCacheOnNetworkError(t *testing.T) {
 	store := cache.NewStore(cacheDir)
 	err := store.SaveRegistry("default/default", cache.RegistrySnapshot{
 		SavedAt: time.Now().UTC().Add(-25 * time.Hour), // stale
-		Servers: []market.ServerDescriptor{minimalCLIServer("degraded", "https://mcp.dingtalk.com/degraded/v1")},
+		Servers: []market.ServerDescriptor{minimalCLIServer("degraded", "https://pre-mcp.dingtalk.com/degraded/v1")},
 	})
 	if err != nil {
 		t.Fatalf("SaveRegistry() error = %v", err)
@@ -514,7 +514,7 @@ func TestLoadDynamicCommandsUsesStaleCacheWithoutBlockingRegistryRefresh(t *test
 			{
 				Key:         "doc-key",
 				DisplayName: "doc",
-				Endpoint:    "https://mcp.dingtalk.com/doc/v1",
+				Endpoint:    "https://pre-mcp.dingtalk.com/doc/v1",
 				Source:      "market",
 				CLI: market.CLIOverlay{
 					ID:      "doc",
@@ -624,7 +624,7 @@ func registryServerEnvelope(id, command, updatedAt string, mcpID int, toolName, 
 			"remotes": []any{
 				map[string]any{
 					"type": "streamable-http",
-					"url":  "https://mcp.dingtalk.com/" + command + "/v1",
+					"url":  "https://pre-mcp.dingtalk.com/" + command + "/v1",
 				},
 			},
 		},

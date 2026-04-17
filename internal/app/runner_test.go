@@ -53,7 +53,7 @@ func contactDiscoveryResponse() map[string]any {
 					"remotes": []any{
 						map[string]any{
 							"type": "streamable-http",
-							"url":  "https://mcp.dingtalk.com/contact/v1",
+							"url":  "https://pre-mcp.dingtalk.com/contact/v1",
 						},
 					},
 				},

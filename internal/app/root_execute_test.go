@@ -194,7 +194,7 @@ func TestVersionCommandUsesCachedRegistryWithoutBlockingAgedDiscovery(t *testing
 	store := cache.NewStore(cacheDir)
 	if err := store.SaveRegistry("default/default", cache.RegistrySnapshot{
 		SavedAt: time.Now().UTC().Add(-2 * time.Hour),
-		Servers: []market.ServerDescriptor{minimalCLIServer("cached", "https://mcp.dingtalk.com/cached/v1")},
+			Servers: []market.ServerDescriptor{minimalCLIServer("cached", "https://pre-mcp.dingtalk.com/cached/v1")},
 	}); err != nil {
 		t.Fatalf("SaveRegistry() error = %v", err)
 	}

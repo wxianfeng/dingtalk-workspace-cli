@@ -18,11 +18,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cache"
-	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cli"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/market"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/output"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/upgrade"
@@ -190,9 +190,14 @@ func doctorCheckNetwork(ctx context.Context, w io.Writer, jsonOut bool, timeout 
 		fmt.Fprint(w, "检查网络连通性...     ")
 	}
 
-	baseURL := cli.DefaultMarketBaseURL
+	baseURL := DiscoveryBaseURL()
 	httpClient := &http.Client{Timeout: timeout}
 	client := market.NewClient(baseURL, httpClient)
+
+	marketHost := "MCP 市场"
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		marketHost = u.Host
+	}
 
 	start := time.Now()
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -205,7 +210,7 @@ func doctorCheckNetwork(ctx context.Context, w io.Writer, jsonOut bool, timeout 
 		r := checkResult{
 			Name:    "network",
 			Status:  statusFail,
-			Message: fmt.Sprintf("mcp.dingtalk.com 不可达: %v", err),
+			Message: fmt.Sprintf("%s 不可达: %v", marketHost, err),
 			Hint:    "请检查网络连接或代理设置",
 		}
 		if !jsonOut {
@@ -217,7 +222,7 @@ func doctorCheckNetwork(ctx context.Context, w io.Writer, jsonOut bool, timeout 
 	r := checkResult{
 		Name:    "network",
 		Status:  statusPass,
-		Message: fmt.Sprintf("mcp.dingtalk.com 可达 (延迟 %dms)", latency.Milliseconds()),
+		Message: fmt.Sprintf("%s 可达 (延迟 %dms)", marketHost, latency.Milliseconds()),
 	}
 	if !jsonOut {
 		printCheckResult(w, r)

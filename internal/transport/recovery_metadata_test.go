@@ -10,7 +10,7 @@ import (
 )
 
 func TestHTTPStatusErrorIncludesCallMetadata(t *testing.T) {
-	err := httpStatusError("tools/call", "https://mcp.dingtalk.com/server", http.StatusTooManyRequests, "", "")
+	err := httpStatusError("tools/call", "https://pre-mcp.dingtalk.com/server", http.StatusTooManyRequests, "", "")
 
 	var callErr *CallError
 	if !errors.As(err, &callErr) {
@@ -53,7 +53,7 @@ func TestDoWithRetryRequestFailureIncludesCallMetadata(t *testing.T) {
 	})})
 	client.MaxRetries = 0
 
-	_, err := client.doWithRetry(context.Background(), "https://mcp.dingtalk.com/server", []byte(`{}`))
+	_, err := client.doWithRetry(context.Background(), "https://pre-mcp.dingtalk.com/server", []byte(`{}`))
 	if err == nil {
 		t.Fatal("doWithRetry() error = nil, want request failure")
 	}

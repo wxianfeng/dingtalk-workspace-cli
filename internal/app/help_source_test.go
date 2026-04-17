@@ -241,7 +241,7 @@ func discoveryServerEntry(command, description string, groups, toolOverrides map
 			"remotes": []any{
 				map[string]any{
 					"type": "streamable-http",
-					"url":  "https://mcp.dingtalk.com/" + command,
+					"url":  "https://pre-mcp.dingtalk.com/" + command,
 				},
 			},
 		},
