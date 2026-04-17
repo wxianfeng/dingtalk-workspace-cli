@@ -124,6 +124,7 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 		token           *TokenData
 		err             error
 		cliAuthDisabled bool
+		denialReason    string
 	}
 	resultCh := make(chan callbackResult, 1)
 	errCh := make(chan error, 1)
@@ -267,7 +268,7 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 		}
 		// Notify main goroutine with full result
 		select {
-		case resultCh <- callbackResult{token: tokenData, cliAuthDisabled: !cliAuthEnabled}:
+		case resultCh <- callbackResult{token: tokenData, cliAuthDisabled: !cliAuthEnabled, denialReason: denialReason}:
 		default:
 		}
 	})
@@ -406,8 +407,18 @@ func (p *OAuthProvider) Login(ctx context.Context, force bool) (*TokenData, erro
 		return nil, fmt.Errorf("%s: %w", i18n.T("换取 token 失败"), result.err)
 	}
 
-	// Handle CLI auth disabled - keep server running for user to apply
+	// Handle CLI auth disabled - for terminal denial reasons, exit immediately
+	// (page shows accessDeniedHTML/channelDeniedHTML with no apply button,
+	// so polling for apply submission would hang forever).
+	// Error messages are kept consistent with the text shown on the HTML pages.
 	if result.cliAuthDisabled {
+		switch result.denialReason {
+		case "user_forbidden", "user_not_allowed":
+			return nil, errors.New(i18n.T("您不在该组织的 CLI 授权人员范围内，请联系组织管理员将您加入授权名单"))
+		case "channel_not_allowed", "channel_required":
+			return nil, errors.New(i18n.T("当前渠道未获得该组织授权，或组织已开启渠道管控，请联系组织管理员开通渠道访问权限，或升级到最新版本的 CLI"))
+		}
+
 		_, _ = fmt.Fprintln(p.output(), "")
 		_, _ = fmt.Fprintln(p.output(), i18n.T("⏳ 该组织尚未开启 CLI 数据访问权限，请在浏览器中提交授权申请..."))
 

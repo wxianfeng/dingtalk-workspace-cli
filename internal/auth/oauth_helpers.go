@@ -970,20 +970,21 @@ const accessDeniedHTML = `<!doctype html>
         padding: 20px;
       }
       .card {
+        height: 600px;
         width: 480px;
         border-radius: 16px;
         background: #ffffff;
         box-sizing: border-box;
         border: 1px solid #f2f2f6;
         box-shadow: 0px 2px 4px 0px rgba(0, 0, 0, 0.12);
-        padding: 48px 24px 40px;
+        padding: 32px 24px 24px;
         text-align: center;
         display: flex;
         justify-content: center;
         align-items: center;
         flex-direction: column;
       }
-      .icon {
+      .lock-icon {
         width: 120px;
         height: 120px;
         margin: 0 auto;
@@ -992,15 +993,38 @@ const accessDeniedHTML = `<!doctype html>
       }
       h1 {
         margin: 8px 0 0;
+        font-family:
+          "PingFang SC",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
         font-size: 18px;
         font-weight: 600;
         line-height: 44px;
+        text-align: center;
+        letter-spacing: normal;
         color: #181c1f;
       }
       p {
-        margin: 8px 0 0;
+        margin: 0;
+        font-family:
+          "PingFang SC",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
         font-size: 14px;
+        font-weight: normal;
         line-height: 21px;
+        text-align: center;
+        letter-spacing: normal;
         color: rgba(24, 28, 31, 0.6);
       }
     </style>
@@ -1008,13 +1032,12 @@ const accessDeniedHTML = `<!doctype html>
   <body>
     <div class="card">
       <img
-        class="icon"
+        class="lock-icon"
         src="https://img.alicdn.com/imgextra/i4/O1CN01fS3xxz1vbzZSGjbe0_!!6000000006192-2-tps-480-480.png"
         alt="lock icon"
       />
       <h1>无权限访问</h1>
-      <p>您不在该组织的 CLI 授权人员范围内。<br />请联系组织管理员将您加入授权名单。</p>
-      <p>此页面可以关闭。</p>
+      <p>您不在该组织的 CLI 授权人员范围内。请联系组织管理员将您加入授权名单。此页面可以关闭。</p>
     </div>
   </body>
 </html>`
@@ -1039,20 +1062,21 @@ const channelDeniedHTML = `<!doctype html>
         padding: 20px;
       }
       .card {
+        height: 600px;
         width: 480px;
         border-radius: 16px;
         background: #ffffff;
         box-sizing: border-box;
         border: 1px solid #f2f2f6;
         box-shadow: 0px 2px 4px 0px rgba(0, 0, 0, 0.12);
-        padding: 48px 24px 40px;
+        padding: 32px 24px 24px;
         text-align: center;
         display: flex;
         justify-content: center;
         align-items: center;
         flex-direction: column;
       }
-      .icon {
+      .lock-icon {
         width: 120px;
         height: 120px;
         margin: 0 auto;
@@ -1061,15 +1085,38 @@ const channelDeniedHTML = `<!doctype html>
       }
       h1 {
         margin: 8px 0 0;
+        font-family:
+          "PingFang SC",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
         font-size: 18px;
         font-weight: 600;
         line-height: 44px;
+        text-align: center;
+        letter-spacing: normal;
         color: #181c1f;
       }
       p {
-        margin: 8px 0 0;
+        margin: 0;
+        font-family:
+          "PingFang SC",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
         font-size: 14px;
+        font-weight: normal;
         line-height: 21px;
+        text-align: center;
+        letter-spacing: normal;
         color: rgba(24, 28, 31, 0.6);
       }
     </style>
@@ -1077,13 +1124,12 @@ const channelDeniedHTML = `<!doctype html>
   <body>
     <div class="card">
       <img
-        class="icon"
+        class="lock-icon"
         src="https://img.alicdn.com/imgextra/i4/O1CN01fS3xxz1vbzZSGjbe0_!!6000000006192-2-tps-480-480.png"
         alt="lock icon"
       />
       <h1>渠道未授权</h1>
-      <p>当前渠道未获得该组织授权，或组织已开启渠道管控。<br />请联系组织管理员开通渠道访问权限，或升级到最新版本的 CLI。</p>
-      <p>此页面可以关闭。</p>
+      <p>当前渠道未获得该组织授权，或组织已开启渠道管控。请联系组织管理员开通渠道访问权限，或升级到最新版本的 CLI。此页面可以关闭。</p>
     </div>
   </body>
 </html>`
