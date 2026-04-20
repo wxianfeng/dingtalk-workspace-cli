@@ -47,12 +47,42 @@ func newLegacyPublicCommands(ctx context.Context, runner executor.Runner) []*cob
 		return mergeTopLevelCommands(commands)
 	}
 
-	var commands []*cobra.Command
-	if dynamicCmds := loadDynamicCommands(ctx, runner); len(dynamicCmds) > 0 {
-		commands = append(commands, dynamicCmds...)
+	dynamicCmds := loadDynamicCommands(ctx, runner)
+	helperCmds := helpers.NewPublicCommands(runner)
+	return mergeTopLevelCommands(pickCommands(dynamicCmds, helperCmds))
+}
+
+// pickCommands returns the union of dynamic and helpers commands, with
+// same-named helpers dropped so discovery envelopes remain the authority.
+//
+// Why this exists: mergeTopLevelCommands below calls cobracmd.MergeCommandTree
+// on same-named top-level commands, which — at leaf conflicts — falls back to
+// "more local flags wins" via ShouldReplaceLeaf. Hardcoded helpers commands
+// typically expose more flags than the corresponding dynamic overlay leaves,
+// so a naive append would silently promote helper leaves over their dynamic
+// counterparts and append helper-only siblings into the dynamic subtree.
+// By shadowing same-named helpers upfront we keep the dynamic subtree intact
+// and let helpers only fill in products the discovery envelope did not cover.
+func pickCommands(dynamic, helpers []*cobra.Command) []*cobra.Command {
+	dynNames := make(map[string]bool, len(dynamic))
+	out := make([]*cobra.Command, 0, len(dynamic)+len(helpers))
+	for _, c := range dynamic {
+		if c == nil {
+			continue
+		}
+		dynNames[c.Name()] = true
+		out = append(out, c)
 	}
-	commands = append(commands, helpers.NewPublicCommands(runner)...)
-	return mergeTopLevelCommands(commands)
+	for _, h := range helpers {
+		if h == nil {
+			continue
+		}
+		if dynNames[h.Name()] {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
 }
 
 // injectStaticServers converts edition.ServerInfo entries into
