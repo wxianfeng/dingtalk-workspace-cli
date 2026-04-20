@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
-	"github.com/spf13/cobra"
 )
 
 // TestKindFromTypeName covers the schema v3 explicit Type field → ValueKind map.
@@ -168,50 +167,5 @@ func TestRuntimeDefaultResolvers_OverlayMerge(t *testing.T) {
 	}
 	if v, ok := fn(context.Background()); !ok || v != "test-user-001" {
 		t.Errorf("$currentUserId=%q ok=%v", v, ok)
-	}
-}
-
-// TestResolveReplaceRunE_NoHook returns nil when no overlay is registered.
-func TestResolveReplaceRunE_NoHook(t *testing.T) {
-	prev := edition.Get()
-	defer edition.Override(prev)
-	edition.Override(nil)
-
-	if resolveReplaceRunE("anything") != nil {
-		t.Errorf("expected nil when hooks absent")
-	}
-}
-
-// TestResolveReplaceRunE_HookReturnsFn routes the lookup through the overlay.
-func TestResolveReplaceRunE_HookReturnsFn(t *testing.T) {
-	prev := edition.Get()
-	defer edition.Override(prev)
-
-	called := false
-	edition.Override(&edition.Hooks{
-		ReplaceRunEHandler: func(id string) edition.ReplaceRunEFn {
-			if id == "demo" {
-				return func(cmd *cobra.Command, rctx edition.ReplaceRunECtx) error {
-					called = true
-					return nil
-				}
-			}
-			return nil
-		},
-	})
-
-	fn := resolveReplaceRunE("demo")
-	if fn == nil {
-		t.Fatal("expected demo handler to resolve")
-	}
-	if err := fn(&cobra.Command{}, edition.ReplaceRunECtx{}); err != nil {
-		t.Fatalf("invoke failed: %v", err)
-	}
-	if !called {
-		t.Error("registered handler was not invoked")
-	}
-
-	if resolveReplaceRunE("missing") != nil {
-		t.Error("expected nil for unknown handler id")
 	}
 }

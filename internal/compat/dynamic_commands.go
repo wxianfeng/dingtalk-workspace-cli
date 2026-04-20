@@ -172,15 +172,6 @@ func BuildDynamicCommands(servers []market.ServerDescriptor, runner executor.Run
 			// §v3.2.5: outputFormat.rename/drop/columns post-processing.
 			route.OutputTransform = buildOutputTransform(override.OutputFormat)
 
-			// §v3.2.4: replaceRunE lookup. Missing handler → warn + default RunE.
-			if handlerID := strings.TrimSpace(override.ReplaceRunE); handlerID != "" {
-				if fn := resolveReplaceRunE(handlerID); fn != nil {
-					route.ReplaceRunE = fn
-				} else {
-					fmt.Fprintf(os.Stderr, "[discovery] replaceRunE: handler %q not registered; using default envelope invocation for %s\n", handlerID, cliName)
-				}
-			}
-
 			cmd := NewDirectCommand(route, runner)
 
 			// Enrich flags with typed parameters from Detail API toolRequest JSON Schema.
@@ -894,16 +885,6 @@ func runtimeDefaultResolvers() map[string]edition.RuntimeDefaultFn {
 		}
 	}
 	return resolvers
-}
-
-// resolveReplaceRunE looks up a handler ID via the edition hook. Returns nil
-// when the hook is missing or the ID is unknown; the caller emits the warning.
-func resolveReplaceRunE(id string) edition.ReplaceRunEFn {
-	hooks := edition.Get()
-	if hooks == nil || hooks.ReplaceRunEHandler == nil {
-		return nil
-	}
-	return hooks.ReplaceRunEHandler(id)
 }
 
 // applyOmitWhen drops a key from params when its value meets the omit

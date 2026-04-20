@@ -187,15 +187,6 @@ type CLIToolOverride struct {
 	// fields (Flags / BodyWrapper / IsSensitive / ServerOverride) are
 	// ignored. Use for deprecated leaf commands that moved to a new path.
 	RedirectTo string `json:"redirectTo,omitempty"`
-	// ReplaceRunE, when non-empty, tells the CLI to look up a named RunE
-	// handler in the edition's ReplaceRunEHandler hook and swap it in for
-	// this leaf command's default MCP invocation. The envelope-declared
-	// flag set / transform / omitWhen / runtimeDefault pipeline still runs
-	// first, so handlers only implement non-declarable logic (conditional
-	// routing, response rewriting, auto-pagination, multi-step pipelines,
-	// cross-server aggregation). Unknown IDs → warning + default RunE.
-	// See schema v3 §2.4.
-	ReplaceRunE string `json:"replaceRunE,omitempty"`
 }
 
 // CLIFlagOverride describes how to map an MCP parameter to a CLI flag.
