@@ -108,6 +108,11 @@ type CLIOverlay struct {
 	// for deprecated command aliases and "did-you-mean" style hints.
 	// Key is the sub-command name; value describes the target path.
 	Hints map[string]CLIHintDef `json:"hintCommands,omitempty"`
+	// RedirectTo, when non-empty, turns the entire top-level product into a
+	// stub that prints "Please use: dws <target>" and performs no work. Used
+	// for deprecated top-level products migrated to new paths (e.g.
+	// `bot → chat bot`, `message → chat message`). See schema v3 §2.6.
+	RedirectTo string `json:"redirectTo,omitempty"`
 }
 
 // CLIHintDef declares a stub sub-command that prints a redirect message.
@@ -131,6 +136,21 @@ type CLIGroupDef struct {
 	Description string `json:"description"`
 }
 
+// CLIOutputFormat declares structured post-processing applied to the MCP tool
+// response before the formatter prints it. See schema v3 §2.5.
+//
+// Apply order: Drop → Rename → Columns. All three are optional.
+type CLIOutputFormat struct {
+	// Rename moves fields from src key to dst key at top level and one level
+	// of nested objects. Missing src keys are silently ignored.
+	Rename map[string]string `json:"rename,omitempty"`
+	// Drop removes these keys from the response (top level + one level deep).
+	Drop []string `json:"drop,omitempty"`
+	// Columns controls column order and subset for --format=table. Ignored in
+	// JSON output mode.
+	Columns []string `json:"columns,omitempty"`
+}
+
 // CLIToolOverride maps an MCP tool to a CLI command with flag aliases and transforms.
 type CLIToolOverride struct {
 	CLIName      string                     `json:"cliName"`
@@ -139,7 +159,10 @@ type CLIToolOverride struct {
 	IsSensitive  bool                       `json:"isSensitive,omitempty"`
 	Hidden       bool                       `json:"hidden,omitempty"`
 	Flags        map[string]CLIFlagOverride `json:"flags,omitempty"`
-	OutputFormat map[string]any             `json:"outputFormat,omitempty"`
+	// OutputFormat declares structured response post-processing. v3 typed form
+	// supersedes v2's untyped map[string]any, but parsing stays lenient so v2
+	// envelopes continue to deserialize (unknown keys are ignored).
+	OutputFormat CLIOutputFormat `json:"outputFormat,omitempty"`
 	// ServerOverride routes this leaf command's tool invocation to a different
 	// product's MCP server (e.g. `chat bot ...` leaves live under the `chat`
 	// command tree but call the `bot` endpoint). Empty means use the enclosing
@@ -164,6 +187,15 @@ type CLIToolOverride struct {
 	// fields (Flags / BodyWrapper / IsSensitive / ServerOverride) are
 	// ignored. Use for deprecated leaf commands that moved to a new path.
 	RedirectTo string `json:"redirectTo,omitempty"`
+	// ReplaceRunE, when non-empty, tells the CLI to look up a named RunE
+	// handler in the edition's ReplaceRunEHandler hook and swap it in for
+	// this leaf command's default MCP invocation. The envelope-declared
+	// flag set / transform / omitWhen / runtimeDefault pipeline still runs
+	// first, so handlers only implement non-declarable logic (conditional
+	// routing, response rewriting, auto-pagination, multi-step pipelines,
+	// cross-server aggregation). Unknown IDs → warning + default RunE.
+	// See schema v3 §2.4.
+	ReplaceRunE string `json:"replaceRunE,omitempty"`
 }
 
 // CLIFlagOverride describes how to map an MCP parameter to a CLI flag.
@@ -186,6 +218,24 @@ type CLIFlagOverride struct {
 	// instead of a --flag. PositionalIndex (0-based) selects which arg slot.
 	Positional      bool `json:"positional,omitempty"`
 	PositionalIndex int  `json:"positionalIndex,omitempty"`
+	// Type explicitly declares the flag's type: "string" (default) / "int" /
+	// "bool" / "stringSlice". When set, overrides the type inferred from MCP
+	// tools/list inputSchema. See schema v3 §2.1.
+	Type string `json:"type,omitempty"`
+	// OmitWhen declares empty-value handling when building the invocation body:
+	//
+	//   "empty" (default): empty string / zero-length slice-or-map → omit
+	//   "zero":            + zero numbers / false booleans → omit
+	//   "never":           always send, even at zero value (explicit-zero semantics)
+	//
+	// See schema v3 §2.2.
+	OmitWhen string `json:"omitWhen,omitempty"`
+	// RuntimeDefault, when non-empty, injects a runtime-resolved value if the
+	// user omits the flag. Allowed placeholders: "$currentUserId" / "$unionId"
+	// / "$corpId" / "$now" / "$today". Unknown placeholders → warning + skip.
+	// Resolution comes from edition.Hooks.RuntimeDefaults; open-source core
+	// only recognises the placeholder set. See schema v3 §2.3.
+	RuntimeDefault string `json:"runtimeDefault,omitempty"`
 }
 
 type CLITool struct {

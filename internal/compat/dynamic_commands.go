@@ -14,17 +14,33 @@
 package compat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/executor"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/market"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
 )
+
+// runtimeDefaultWhitelist is the closed set of placeholders v3 supports for
+// CLIFlagOverride.RuntimeDefault. Placeholders outside this set emit a
+// warning at command-build time and are ignored at invocation time. See
+// discovery-schema-v3 §2.3.
+var runtimeDefaultWhitelist = map[string]bool{
+	"$currentUserId": true,
+	"$unionId":       true,
+	"$corpId":        true,
+	"$now":           true,
+	"$today":         true,
+}
 
 // BuildDynamicCommands generates cobra commands from servers.json CLIOverlay metadata.
 // Each server with non-skip CLIOverlay gets a top-level command with groups and
@@ -47,16 +63,27 @@ func BuildDynamicCommands(servers []market.ServerDescriptor, runner executor.Run
 		if cli.Skip {
 			continue
 		}
-		if len(cli.ToolOverrides) == 0 {
-			continue
-		}
-
 		// §1.1: cli.command → top-level command name
 		cmdName := strings.TrimSpace(cli.Command)
 		if cmdName == "" {
 			cmdName = strings.TrimSpace(cli.ID)
 		}
 		if cmdName == "" {
+			continue
+		}
+
+		// §v3.2.6: CLIOverlay.RedirectTo turns the entire top-level product
+		// into a stub that prints "Please use: dws <target>".
+		if target := strings.TrimSpace(cli.RedirectTo); target != "" {
+			stub := buildOverlayRedirect(cmdName, cli.Description, target)
+			if cli.Hidden {
+				stub.Hidden = true
+			}
+			built = append(built, builtCmd{cmd: stub, parent: strings.TrimSpace(cli.Parent)})
+			continue
+		}
+
+		if len(cli.ToolOverrides) == 0 {
 			continue
 		}
 
@@ -140,6 +167,18 @@ func BuildDynamicCommands(servers []market.ServerDescriptor, runner executor.Run
 			// §5.1: isSensitive → need --yes confirmation
 			if override.IsSensitive {
 				route.Normalizer = chainSensitiveNormalizer(normalizer)
+			}
+
+			// §v3.2.5: outputFormat.rename/drop/columns post-processing.
+			route.OutputTransform = buildOutputTransform(override.OutputFormat)
+
+			// §v3.2.4: replaceRunE lookup. Missing handler → warn + default RunE.
+			if handlerID := strings.TrimSpace(override.ReplaceRunE); handlerID != "" {
+				if fn := resolveReplaceRunE(handlerID); fn != nil {
+					route.ReplaceRunE = fn
+				} else {
+					fmt.Fprintf(os.Stderr, "[discovery] replaceRunE: handler %q not registered; using default envelope invocation for %s\n", handlerID, cliName)
+				}
 			}
 
 			cmd := NewDirectCommand(route, runner)
@@ -452,6 +491,16 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 		defaultValue string
 	}
 	var hiddenDefaults []hiddenDefaultEntry
+	type runtimeDefaultEntry struct {
+		paramName   string
+		placeholder string
+	}
+	var runtimeDefaults []runtimeDefaultEntry
+	type omitEntry struct {
+		paramName string
+		mode      string // "empty" (default) | "zero" | "never"
+	}
+	omits := make(map[string]omitEntry, len(paramNames))
 
 	for _, paramName := range paramNames {
 		flagOverride := override.Flags[paramName]
@@ -482,7 +531,7 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 			FlagName: flagName,
 			Short:    strings.TrimSpace(flagOverride.Shorthand),
 			Property: paramName,
-			Kind:     ValueString,
+			Kind:     kindFromTypeName(flagOverride.Type),
 			Usage:    usage,
 			// §P1: required and positional are mutually exclusive — positional
 			// args are validated by cobra's MinimumNArgs, not MarkFlagRequired.
@@ -518,10 +567,23 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 				envVar:    flagOverride.EnvDefault,
 			})
 		}
+		if rd := strings.TrimSpace(flagOverride.RuntimeDefault); rd != "" {
+			if !runtimeDefaultWhitelist[rd] {
+				fmt.Fprintf(os.Stderr, "[discovery] runtimeDefault: unknown placeholder %q on %s; ignoring\n", rd, paramName)
+			} else {
+				runtimeDefaults = append(runtimeDefaults, runtimeDefaultEntry{
+					paramName:   paramName,
+					placeholder: rd,
+				})
+			}
+		}
+		if mode := strings.TrimSpace(flagOverride.OmitWhen); mode != "" && mode != "empty" {
+			omits[paramName] = omitEntry{paramName: paramName, mode: mode}
+		}
 	}
 
 	// Check if we need a normalizer: transforms, env defaults, hidden defaults,
-	// dotted property paths that need nesting, or a body wrapper.
+	// runtime defaults, omit-when overrides, dotted property paths, or body wrapper.
 	needsDottedNesting := false
 	for _, b := range bindings {
 		if strings.Contains(b.Property, ".") {
@@ -530,11 +592,12 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 		}
 	}
 	bodyWrapper := strings.TrimSpace(override.BodyWrapper)
-	if len(transforms) == 0 && len(envDefaults) == 0 && len(hiddenDefaults) == 0 && !needsDottedNesting && bodyWrapper == "" {
+	if len(transforms) == 0 && len(envDefaults) == 0 && len(hiddenDefaults) == 0 && len(runtimeDefaults) == 0 && len(omits) == 0 && !needsDottedNesting && bodyWrapper == "" {
 		return bindings, nil
 	}
 
-	// Build a normalizer that applies hidden defaults + env defaults + transforms + nesting + body wrap
+	// Build a normalizer that applies hidden defaults + env defaults + runtime defaults
+	// + transforms + omitWhen + nesting + body wrap.
 	normalizer := func(cmd *cobra.Command, params map[string]any) error {
 		// §2.5: Apply hidden flag defaults for parameters not explicitly set
 		for _, hd := range hiddenDefaults {
@@ -548,6 +611,26 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 			if _, exists := params[ed.paramName]; !exists {
 				if envVal := strings.TrimSpace(os.Getenv(ed.envVar)); envVal != "" {
 					params[ed.paramName] = envVal
+				}
+			}
+		}
+
+		// §v3.2.3: Apply runtime defaults (lowest priority, last default fill).
+		if len(runtimeDefaults) > 0 {
+			resolvers := runtimeDefaultResolvers()
+			for _, rd := range runtimeDefaults {
+				if _, exists := params[rd.paramName]; exists {
+					continue
+				}
+				resolver, ok := resolvers[rd.placeholder]
+				if !ok {
+					// Whitelisted but no provider registered (common on
+					// open-source core). Emit a single warning and move on.
+					fmt.Fprintf(os.Stderr, "[discovery] runtimeDefault: no resolver registered for %s; skipping %s\n", rd.placeholder, rd.paramName)
+					continue
+				}
+				if val, ok := resolver(cmd.Context()); ok && val != "" {
+					params[rd.paramName] = val
 				}
 			}
 		}
@@ -569,6 +652,14 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 				return err
 			}
 			params[t.paramName] = transformed
+		}
+
+		// §v3.2.2: Apply omitWhen — drop keys whose value meets the omit
+		// condition for the declared mode. Default mode "empty" is already
+		// handled implicitly by CollectBindings (empty string / empty slice
+		// never enters params), so we only deal with "zero" and "never".
+		for _, o := range omits {
+			applyOmitWhen(params, o.paramName, o.mode)
 		}
 
 		// Nest dotted property paths: "Body.query" → params["Body"]["query"]
@@ -758,6 +849,111 @@ func sortedToolNames(m map[string]market.CLIToolOverride) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// kindFromTypeName maps the v3 CLIFlagOverride.Type declaration to the
+// internal FlagBinding.Kind enum. Empty / unknown → ValueString (which keeps
+// the v2 behaviour where every overlay flag was a plain string).
+func kindFromTypeName(typeName string) ValueKind {
+	switch strings.TrimSpace(strings.ToLower(typeName)) {
+	case "int", "integer", "number":
+		return ValueInt
+	case "bool", "boolean":
+		return ValueBool
+	case "stringslice", "string_slice", "[]string":
+		return ValueStringSlice
+	case "string", "":
+		return ValueString
+	default:
+		fmt.Fprintf(os.Stderr, "[discovery] flag type %q not recognised; defaulting to string\n", typeName)
+		return ValueString
+	}
+}
+
+// runtimeDefaultResolvers returns the edition-provided resolver map plus
+// built-in fallbacks for $now / $today (which are trivially local). Overlays
+// are expected to register the user-identity placeholders; $now / $today are
+// always available.
+func runtimeDefaultResolvers() map[string]edition.RuntimeDefaultFn {
+	resolvers := make(map[string]edition.RuntimeDefaultFn, len(runtimeDefaultWhitelist))
+	resolvers["$now"] = func(ctx context.Context) (string, bool) {
+		return fmt.Sprintf("%d", time.Now().UnixMilli()), true
+	}
+	resolvers["$today"] = func(ctx context.Context) (string, bool) {
+		loc, err := time.LoadLocation("Asia/Shanghai")
+		if err != nil {
+			loc = time.FixedZone("CST", 8*3600)
+		}
+		return time.Now().In(loc).Format("2006-01-02"), true
+	}
+	if hooks := edition.Get(); hooks != nil && hooks.RuntimeDefaults != nil {
+		for id, fn := range hooks.RuntimeDefaults() {
+			if fn != nil {
+				resolvers[id] = fn
+			}
+		}
+	}
+	return resolvers
+}
+
+// resolveReplaceRunE looks up a handler ID via the edition hook. Returns nil
+// when the hook is missing or the ID is unknown; the caller emits the warning.
+func resolveReplaceRunE(id string) edition.ReplaceRunEFn {
+	hooks := edition.Get()
+	if hooks == nil || hooks.ReplaceRunEHandler == nil {
+		return nil
+	}
+	return hooks.ReplaceRunEHandler(id)
+}
+
+// applyOmitWhen drops a key from params when its value meets the omit
+// condition for the declared mode. "empty" (the default) is handled by
+// CollectBindings upstream, so this function only processes "zero" and
+// "never" — "never" is a marker that keeps the zero value explicit, so we
+// do nothing for it.
+func applyOmitWhen(params map[string]any, key, mode string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "never":
+		return
+	case "zero":
+		val, exists := params[key]
+		if !exists {
+			return
+		}
+		if isZeroValue(val) {
+			delete(params, key)
+		}
+	default:
+		// "empty" is the default, no-op.
+	}
+	// Emit a trace for anyone debugging envelope behaviour; kept at Debug so
+	// it never leaks into the default CLI output.
+	slog.Debug("applyOmitWhen", "key", key, "mode", mode)
+}
+
+func isZeroValue(v any) bool {
+	switch val := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(val) == ""
+	case bool:
+		return !val
+	case int:
+		return val == 0
+	case int64:
+		return val == 0
+	case float64:
+		return val == 0
+	case []any:
+		return len(val) == 0
+	case []string:
+		return len(val) == 0
+	case map[string]any:
+		return len(val) == 0
+	default:
+		return false
+	}
 }
 
 // nestDottedPaths converts flat dotted keys in params into nested maps.

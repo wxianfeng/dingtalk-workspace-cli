@@ -618,9 +618,9 @@ func TestBuildDynamicCommands_MutuallyExclusive(t *testing.T) {
 					"list_messages": {
 						CLIName: "list",
 						Flags: map[string]market.CLIFlagOverride{
-							"groupId":         {Alias: "group"},
-							"userId":          {Alias: "user"},
-							"openDingtalkId":  {Alias: "open-dingtalk-id"},
+							"groupId":        {Alias: "group"},
+							"userId":         {Alias: "user"},
+							"openDingtalkId": {Alias: "open-dingtalk-id"},
 						},
 						MutuallyExclusive: [][]string{
 							{"group", "user", "open-dingtalk-id"},

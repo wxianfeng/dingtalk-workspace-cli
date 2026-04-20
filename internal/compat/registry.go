@@ -30,6 +30,7 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/executor"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/output"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/convert"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -79,6 +80,15 @@ type Route struct {
 	Target     Target
 	Bindings   []FlagBinding
 	Normalizer Normalizer
+	// ReplaceRunE, when non-nil, is invoked instead of the default MCP
+	// invocation after flag collection / normalization completes. Edition
+	// overlays register these via the discovery envelope's replaceRunE
+	// field. See discovery-schema-v3 §2.4.
+	ReplaceRunE edition.ReplaceRunEFn
+	// OutputTransform, when non-nil, post-processes the MCP response payload
+	// (rename / drop / columns) before the formatter emits it. Wired up from
+	// CLIToolOverride.OutputFormat. See discovery-schema-v3 §2.5.
+	OutputTransform func(map[string]any) map[string]any
 }
 
 type CommandFactory func(runner executor.Runner) *cobra.Command
@@ -194,6 +204,19 @@ func NewDirectCommand(route Route, runner executor.Runner) *cobra.Command {
 				delete(params, "_blocked")
 			}
 
+			// Replace-RunE: overlay-declared handler takes over after all
+			// envelope-driven flag collection / normalization has run. See
+			// discovery-schema-v3 §2.4.
+			if route.ReplaceRunE != nil {
+				caller := newToolCallerAdapter(cmd, runner)
+				return route.ReplaceRunE(cmd, edition.ReplaceRunECtx{
+					ServerID: route.Target.CanonicalProduct,
+					ToolName: route.Target.Tool,
+					Params:   params,
+					Caller:   caller,
+				})
+			}
+
 			invocation := executor.NewCompatibilityInvocation(
 				cobracmd.LegacyCommandPath(cmd),
 				route.Target.CanonicalProduct,
@@ -206,6 +229,9 @@ func NewDirectCommand(route Route, runner executor.Runner) *cobra.Command {
 			result, err := runner.Run(cmd.Context(), invocation)
 			if err != nil {
 				return err
+			}
+			if route.OutputTransform != nil && result.Response != nil {
+				result.Response = route.OutputTransform(result.Response)
 			}
 			return output.WriteCommandPayload(cmd, result, output.FormatJSON)
 		},

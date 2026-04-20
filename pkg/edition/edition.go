@@ -55,6 +55,36 @@ type ToolCaller interface {
 	DryRun() bool
 }
 
+// ReplaceRunECtx carries the collected flag set, pre-normalized params, and
+// MCP caller into a Replace-RunE handler. Handlers only implement non-
+// declarable business logic; all envelope-declared flag parsing / transform /
+// omitWhen / runtimeDefault has already run by the time the handler executes.
+//
+// See discovery-schema-v3 §2.4.
+type ReplaceRunECtx struct {
+	// ServerID is the canonical MCP product ID this leaf targets. Reflects
+	// CLIToolOverride.ServerOverride when set, otherwise the enclosing
+	// CLIOverlay.ID.
+	ServerID string
+	// ToolName is the MCP tool name declared in the envelope's toolOverrides.
+	ToolName string
+	// Params is the normalized body ready for MCP invocation. Handlers may
+	// mutate it before calling Caller.CallTool.
+	Params map[string]any
+	// Caller is the MCP invocation facade.
+	Caller ToolCaller
+}
+
+// ReplaceRunEFn is the handler signature resolved from CLIToolOverride.ReplaceRunE.
+// It is invoked in place of the default envelope → MCP invocation on the leaf.
+type ReplaceRunEFn func(cmd *cobra.Command, rctx ReplaceRunECtx) error
+
+// RuntimeDefaultFn resolves a single runtimeDefault placeholder (e.g.
+// "$currentUserId") to a concrete string value. Called lazily at RunE time.
+// Returning (_, false) is equivalent to "not registered" and falls through
+// to the next-lower default source.
+type RuntimeDefaultFn func(ctx context.Context) (string, bool)
+
 // Hooks groups all edition-specific behavioural overrides. Zero values
 // fall back to open-source defaults so the struct is safe to use as-is.
 type Hooks struct {
@@ -125,6 +155,21 @@ type Hooks struct {
 	// this to return custom error types with specific exit codes (e.g. PAT
 	// authorization errors with exit code 4).
 	ClassifyToolResult func(content map[string]any) error
+
+	// --- schema v3: Replace-RunE + runtime defaults ---
+
+	// ReplaceRunEHandler resolves a named RunE handler declared by
+	// CLIToolOverride.ReplaceRunE. Returning nil means "no handler" and the
+	// leaf keeps its default envelope-based MCP invocation. Open-source core
+	// always returns nil; overlays register handlers via this hook.
+	ReplaceRunEHandler func(id string) ReplaceRunEFn
+
+	// RuntimeDefaults returns resolvers for runtimeDefault placeholders (e.g.
+	// "$currentUserId" → fn). Placeholders not in the map fall through to a
+	// "not registered" warning. Open-source core returns an empty map;
+	// overlays populate the whitelist ($currentUserId / $unionId / $corpId /
+	// $now / $today). See schema v3 §2.3.
+	RuntimeDefaults func() map[string]RuntimeDefaultFn
 }
 
 var (
