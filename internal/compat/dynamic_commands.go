@@ -26,6 +26,7 @@ import (
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/executor"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/market"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/cmdutil"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
 )
@@ -79,6 +80,10 @@ func BuildDynamicCommands(servers []market.ServerDescriptor, runner executor.Run
 			if cli.Hidden {
 				stub.Hidden = true
 			}
+			// Mark envelope provenance so overlay registrants can tell this
+			// redirect stub apart from a helper fallback carrying the same
+			// name; see cmdutil.SourceAnnotation.
+			cmdutil.MarkEnvelopeSource(stub)
 			built = append(built, builtCmd{cmd: stub, parent: strings.TrimSpace(cli.Parent)})
 			continue
 		}
@@ -92,6 +97,11 @@ func BuildDynamicCommands(servers []market.ServerDescriptor, runner executor.Run
 		if cli.Hidden {
 			rootCmd.Hidden = true
 		}
+		// Mark envelope provenance so edition overlays can distinguish this
+		// dynamic root from a same-named helper fallback when deciding
+		// whether to merge hardcoded leaves or evict and replace. See
+		// cmdutil.SourceAnnotation and the wukong overlay's RegisterProducts.
+		cmdutil.MarkEnvelopeSource(rootCmd)
 
 		// Build detail index for this server: toolName → DetailTool
 		detailIndex := buildDetailIndex(detailsByID[strings.TrimSpace(cli.ID)])

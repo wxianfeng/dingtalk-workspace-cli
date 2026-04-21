@@ -26,6 +26,15 @@ import (
 // behaviour the envelope explicitly does not declare. See
 // _docs/discovery-overlay-authority.md.
 //
+// PRECONDITION: dynamicRoot must be envelope-sourced (carry the
+// SourceAnnotation=SourceEnvelope marker set by BuildDynamicCommands via
+// MarkEnvelopeSource). Callers that might otherwise pass a helper-fallback
+// root with the same name are responsible for evicting it upstream —
+// otherwise the "envelope is authority" rule silently promotes helper leaves
+// over same-named hardcoded leaves and the overlay loses its ability to
+// override routing. The wukong overlay's RegisterProducts gates this call on
+// IsEnvelopeSourced(dynamicRoot); new callers must do the same.
+//
 // Conflict resolution table:
 //
 //	dynamic  hardcoded  →  action
