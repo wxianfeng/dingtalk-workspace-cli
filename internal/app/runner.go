@@ -94,6 +94,15 @@ const (
 )
 
 func newCommandRunnerWithFlags(loader cli.CatalogLoader, flags *GlobalFlags) executor.Runner {
+	// Ensure DWS_CLIENT_ID env is populated from persisted config before
+	// resolveIdentityHeaders reads it.  This covers fresh-process cold starts
+	// where no env var has been inherited from a parent process.
+	if os.Getenv("DWS_CLIENT_ID") == "" {
+		if cid := authpkg.ClientID(); cid != "" {
+			_ = os.Setenv("DWS_CLIENT_ID", cid)
+		}
+	}
+
 	var httpClient *http.Client
 	if flags != nil && flags.Timeout > 0 {
 		httpClient = &http.Client{Timeout: time.Duration(flags.Timeout) * time.Second}
@@ -298,19 +307,50 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 				}
 			}
 		}
+		// PAT scope error: offer human-readable output and retry after authorization
+		if isPatScopeError(err) {
+			scopeErr := extractPatScopeError(err)
+			captureRuntimeFailure(invocation, err, err)
+			return retryWithPatAuthRetry(ctx, r, invocation, scopeErr, defaultConfigDir(), os.Stderr)
+		}
 		captureRuntimeFailure(invocation, err, err)
 		return executor.Result{}, err
 	}
 
+	// ---- Edition hook gets first dibs (preserves overlay PATError passthrough) ----
 	if fn := edition.Get().ClassifyToolResult; fn != nil {
 		if editionErr := fn(callResult.Content); editionErr != nil {
+			if patCheck := apperrors.AsPatAuthCheckError(editionErr); patCheck != nil {
+				if IsPatRetrying(ctx) {
+					return executor.Result{}, patCheck // already retried once, don't loop
+				}
+				return handlePatAuthCheck(ctx, r, invocation, patCheck, defaultConfigDir(), os.Stderr)
+			}
 			return executor.Result{}, editionErr
 		}
+	}
+
+	// ---- Structured PAT auth check (open-source fallback) ----
+	if patCheck := apperrors.ClassifyPatAuthCheck(callResult.Content); patCheck != nil {
+		if IsPatRetrying(ctx) {
+			return executor.Result{}, patCheck // already retried once, don't loop
+		}
+		return handlePatAuthCheck(ctx, r, invocation, patCheck, defaultConfigDir(), os.Stderr)
 	}
 
 	if callResult.IsError {
 		diag := transport.ExtractServerDiagnosticsFromMap(callResult.Content)
 		logBusinessError(r.transport.FileLogger, "mcp_tool_error", invocation, callResult.Content, diag)
+
+		// ClassifyToolResult hook: let the overlay intercept known error
+		// patterns (PAT permission, gateway-auth) before generic handling.
+		if classify := edition.Get().ClassifyToolResult; classify != nil {
+			if hookErr := classify(callResult.Content); hookErr != nil {
+				captureRuntimeFailure(invocation, hookErr, hookErr)
+				return executor.Result{}, hookErr
+			}
+		}
+
 		mcpErr := apperrors.NewAPI(
 			extractMCPErrorMessage(callResult),
 			apperrors.WithOperation("tools/call"),
@@ -319,6 +359,12 @@ func (r *runtimeRunner) executeInvocation(ctx context.Context, endpoint string, 
 			apperrors.WithHint("MCP tool returned a business error; check tool parameters and refer to skill documentation."),
 			apperrors.WithServerDiag(diag),
 		)
+		// PAT scope error in business response: offer human-readable output and retry
+		if isPatScopeError(mcpErr) {
+			scopeErr := extractPatScopeError(mcpErr)
+			captureRuntimeFailure(invocation, mcpErr, mcpErr)
+			return retryWithPatAuthRetry(ctx, r, invocation, scopeErr, defaultConfigDir(), os.Stderr)
+		}
 		captureRuntimeFailure(invocation, mcpErr, mcpErr)
 		return executor.Result{}, mcpErr
 	}
@@ -532,7 +578,7 @@ func resolveIdentityHeaders() map[string]string {
 		headers = make(map[string]string)
 	}
 
-	// Inject environment variable based headers for MCP gateway tracking
+	// Inject environment variable based headers for MCP gateway tracking.
 	envHeaders := map[string]string{
 		"x-dingtalk-agent":      os.Getenv(envDingtalkAgent),
 		"x-dingtalk-trace-id":   os.Getenv(envDingtalkTraceID),

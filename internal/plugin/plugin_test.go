@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -402,7 +401,10 @@ func TestLoaderLoadManaged(t *testing.T) {
 	}
 }
 
-func TestRemoveManagedPluginBlocked(t *testing.T) {
+// TestRemoveLegacyManagedPlugin ensures plugins that were installed under
+// the legacy ~/.dws/plugins/managed/ directory are now freely removable
+// — the old "cannot be removed" privilege has been dropped.
+func TestRemoveLegacyManagedPlugin(t *testing.T) {
 	dir := t.TempDir()
 	managedDir := filepath.Join(dir, "managed", "conference")
 	if err := os.MkdirAll(managedDir, 0o755); err != nil {
@@ -413,12 +415,76 @@ func TestRemoveManagedPluginBlocked(t *testing.T) {
 	}
 
 	loader := &Loader{PluginsDir: dir, CLIVersion: "1.0.0"}
-	err := loader.RemovePlugin("conference", false)
-	if err == nil {
-		t.Fatal("expected error when removing managed plugin")
+	if err := loader.RemovePlugin("conference", false); err != nil {
+		t.Fatalf("unexpected error removing legacy managed plugin: %v", err)
 	}
-	if !contains(err.Error(), "managed plugin") {
-		t.Errorf("error message should mention managed plugin, got: %v", err)
+	if _, err := os.Stat(managedDir); !os.IsNotExist(err) {
+		t.Errorf("managed plugin dir should be removed, stat err = %v", err)
+	}
+}
+
+// TestRemovePluginPurgesSettings verifies RemovePlugin fully purges the
+// plugin's settings — both its enabled flag and any pluginConfigs entry —
+// so settings.json does not retain dangling state for a plugin that no
+// longer exists on disk. Covers both the user and legacy managed paths.
+func TestRemovePluginPurgesSettings(t *testing.T) {
+	cases := []struct {
+		name    string
+		layout  string // "user" or "legacy"
+		pkgName string
+	}{
+		{name: "user plugin", layout: "user", pkgName: "my-plugin"},
+		{name: "legacy managed plugin", layout: "legacy", pkgName: "conference"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var pluginDir string
+			switch tc.layout {
+			case "user":
+				pluginDir = filepath.Join(dir, "user", tc.pkgName)
+			case "legacy":
+				pluginDir = filepath.Join(dir, "managed", tc.pkgName)
+			}
+			if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(pluginDir, "plugin.json"),
+				[]byte(`{"name":"`+tc.pkgName+`","version":"1.0.0"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			loader := &Loader{PluginsDir: dir, CLIVersion: "1.0.0"}
+
+			// Seed settings.json with an explicit enabled flag and a
+			// pluginConfigs entry to verify both get purged.
+			settings := &Settings{
+				EnabledPlugins: map[string]bool{tc.pkgName: true, "other-plugin": true},
+				PluginConfigs: map[string]map[string]any{
+					tc.pkgName:     {"API_KEY": "secret"},
+					"other-plugin": {"TOKEN": "keep-me"},
+				},
+			}
+			loader.saveSettings(settings)
+
+			if err := loader.RemovePlugin(tc.pkgName, false); err != nil {
+				t.Fatalf("RemovePlugin: %v", err)
+			}
+
+			reloaded := loader.loadSettings()
+			if _, exists := reloaded.EnabledPlugins[tc.pkgName]; exists {
+				t.Errorf("EnabledPlugins should not retain removed plugin %q", tc.pkgName)
+			}
+			if _, exists := reloaded.PluginConfigs[tc.pkgName]; exists {
+				t.Errorf("PluginConfigs should not retain removed plugin %q", tc.pkgName)
+			}
+			if !reloaded.EnabledPlugins["other-plugin"] {
+				t.Error("unrelated EnabledPlugins entry should be preserved")
+			}
+			if reloaded.PluginConfigs["other-plugin"]["TOKEN"] != "keep-me" {
+				t.Error("unrelated PluginConfigs entry should be preserved")
+			}
+		})
 	}
 }
 
@@ -491,32 +557,6 @@ func TestParseGitURL(t *testing.T) {
 				if repo != tt.wantRepo {
 					t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
 				}
-			}
-		})
-	}
-}
-
-func TestPromptUpdate(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{"empty = yes", "\n", true},
-		{"y = yes", "y\n", true},
-		{"Y = yes", "Y\n", true},
-		{"yes = yes", "yes\n", true},
-		{"n = no", "n\n", false},
-		{"no = no", "no\n", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var buf strings.Builder
-			r := strings.NewReader(tt.input)
-			got := promptUpdate(&buf, r, "test-plugin", "1.0.0", "2.0.0", "")
-			if got != tt.want {
-				t.Errorf("promptUpdate() = %v, want %v", got, tt.want)
 			}
 		})
 	}

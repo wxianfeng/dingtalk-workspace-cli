@@ -18,6 +18,8 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -110,32 +112,66 @@ const (
 // ── Plugin system ──────────────────────────────────────────────────────
 
 const (
-	// PluginManagedDir is the subdirectory under ~/.dws/plugins/ for
-	// official (DingTalk-Real-AI) plugins that are auto-pulled.
+	// PluginManagedDir is a legacy subdirectory under ~/.dws/plugins/
+	// retained so plugins installed by older CLI versions remain loadable.
+	// New installs always go to PluginUserDir; there is no privilege
+	// associated with this directory anymore.
 	PluginManagedDir = "managed"
 
-	// PluginUserDir is the subdirectory under ~/.dws/plugins/ for
-	// user-installed third-party plugins.
+	// PluginUserDir is the subdirectory under ~/.dws/plugins/ where all
+	// third-party plugins are installed. Every plugin — whether authored
+	// by the DingTalk team or anyone else — lives here with equal status.
 	PluginUserDir = "user"
 
 	// PluginDataDir is the subdirectory under ~/.dws/plugins/ for
 	// plugin persistent data that survives across version updates.
 	PluginDataDir = "data"
 
-	// PluginUpdateCheckInterval is how often to check for official
-	// plugin updates (at most once per interval per CLI invocation).
-	PluginUpdateCheckInterval = 1 * time.Hour
-
 	// PluginHookTimeout is the default timeout for plugin hook commands.
 	PluginHookTimeout = 30 * time.Second
-
-	// OfficialPluginWorkspace is the workspace name that identifies
-	// official plugins. Plugins under this workspace are auto-pulled.
-	OfficialPluginWorkspace = "DingTalk-Real-AI"
 )
 
-// DefaultManagedPlugins lists the official plugins that should be
-// automatically pulled on first run if not already present locally.
-// Each entry is the short plugin name (without the workspace prefix);
-// the full qualified name is OfficialPluginWorkspace + "/" + name.
-var DefaultManagedPlugins = []string{}
+// ── Platform URLs ────────────────────────────────────────────────────────────
+// Shared across auth, errors, and device-flow packages.
+
+const (
+	// DefaultTerminalBaseURL is the DingTalk developer platform base URL.
+	// Override at runtime via ~/.dws/terminal_url file.
+	DefaultTerminalBaseURL = "https://open-dev.dingtalk.com"
+
+	// DeveloperSettingsPath is the path to the organization developer
+	// settings page (CLI access management).
+	DeveloperSettingsPath = "/fe/old#/developerSettings"
+)
+
+// DefaultConfigDir returns the default DWS configuration directory.
+// Priority: DWS_CONFIG_DIR env var > ~/.dws
+func DefaultConfigDir() string {
+	if envDir := os.Getenv("DWS_CONFIG_DIR"); envDir != "" {
+		return envDir
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ".dws"
+	}
+	return filepath.Join(homeDir, ".dws")
+}
+
+// GetTerminalBaseURL returns the terminal base URL with priority:
+//  1. ~/.dws/terminal_url file content (for pre-release environment)
+//  2. Default value (https://open-dev.dingtalk.com)
+func GetTerminalBaseURL() string {
+	terminalURLPath := filepath.Join(DefaultConfigDir(), "terminal_url")
+	if data, err := os.ReadFile(terminalURLPath); err == nil {
+		if u := strings.TrimSpace(string(data)); u != "" {
+			return u
+		}
+	}
+	return DefaultTerminalBaseURL
+}
+
+// GetDeveloperSettingsURL returns the full URL to the organization developer
+// settings page, derived from the terminal base URL.
+func GetDeveloperSettingsURL() string {
+	return GetTerminalBaseURL() + DeveloperSettingsPath
+}
