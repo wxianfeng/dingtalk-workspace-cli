@@ -1945,3 +1945,73 @@ func TestBuildDynamicCommands_ParentMergeLeafCollision(t *testing.T) {
 		t.Fatalf("expected exactly one 'send' leaf, got %d", sendCount)
 	}
 }
+
+// TestNormalizer_DefaultChainOrder verifies the §v3.3 precedence contract
+// baked into the normalizer closure:
+//
+//	envelope defaultInjects > envDefaults > runtimeDefaults > helper fallback
+//
+// All four stages share the same exists-skip rule, so whichever runs first
+// pins the value. The helper fallback is registered via AddHelperDefault,
+// which is the seam used by internal/app.mergeDynamicWithHelpers at
+// runtime. This test covers:
+//   - envelope DefaultInjects with a value → helper fallback refused at
+//     registration time (envelopeClaimed set).
+//   - envelope without DefaultInjects → helper fallback wins.
+//   - helper key already populated from CollectBindings → helper skipped.
+func TestNormalizer_DefaultChainOrder(t *testing.T) {
+	t.Parallel()
+
+	override := market.CLIToolOverride{
+		CLIName: "list",
+		Flags: map[string]market.CLIFlagOverride{
+			// envelope declares Default → helper must be refused.
+			"claimed": {Alias: "claimed", Type: "int", Default: "11"},
+			// envelope declares no Default → helper fallback should inject.
+			"fallback": {Alias: "fallback", Type: "int"},
+			// envelope declares no Default → user will set via argv, so
+			// helper fallback must be skipped via exists-skip.
+			"user": {Alias: "user", Type: "int"},
+		},
+	}
+	bindings, normalizer := buildOverrideBindings(override)
+	cmd := &cobra.Command{Use: "list"}
+	ApplyBindings(cmd, bindings)
+	registerRouteForHelperDefaults(cmd, bindings)
+	t.Cleanup(func() { routeRegistry.Delete(cmd) })
+
+	if AddHelperDefault(cmd, "claimed", "99") {
+		t.Fatal("envelope-claimed default must refuse helper registration")
+	}
+	if !AddHelperDefault(cmd, "fallback", "7") {
+		t.Fatal("AddHelperDefault(fallback) returned false")
+	}
+	if !AddHelperDefault(cmd, "user", "5") {
+		t.Fatal("AddHelperDefault(user) returned false")
+	}
+
+	if err := cmd.ParseFlags([]string{"--user", "3"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+
+	params, err := CollectBindings(cmd, bindings, nil)
+	if err != nil {
+		t.Fatalf("CollectBindings: %v", err)
+	}
+	if err := normalizer(cmd, params); err != nil {
+		t.Fatalf("normalizer: %v", err)
+	}
+
+	if got, ok := params["claimed"].(int); !ok || got != 11 {
+		t.Fatalf("claimed: expected envelope default 11, got %T(%v)",
+			params["claimed"], params["claimed"])
+	}
+	if got, ok := params["fallback"].(int); !ok || got != 7 {
+		t.Fatalf("fallback: expected helper default 7, got %T(%v)",
+			params["fallback"], params["fallback"])
+	}
+	if got, ok := params["user"].(int); !ok || got != 3 {
+		t.Fatalf("user: expected user value 3, got %T(%v)",
+			params["user"], params["user"])
+	}
+}

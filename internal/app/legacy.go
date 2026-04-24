@@ -32,6 +32,7 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/executor"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/helpers"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/market"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/cmdutil"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
@@ -49,38 +50,79 @@ func newLegacyPublicCommands(ctx context.Context, runner executor.Runner) []*cob
 
 	dynamicCmds := loadDynamicCommands(ctx, runner)
 	helperCmds := helpers.NewPublicCommands(runner)
-	return mergeTopLevelCommands(pickCommands(dynamicCmds, helperCmds))
+	return mergeDynamicWithHelpers(dynamicCmds, helperCmds)
 }
 
-// pickCommands returns the union of dynamic and helpers commands, with
-// same-named helpers dropped so discovery envelopes remain the authority.
+// mergeDynamicWithHelpers unions dynamic (envelope-sourced) commands with
+// hardcoded helper commands. The discovery envelope is authoritative at the
+// leaf level, but helper-only sibling subtrees are grafted onto the dynamic
+// root so products keep a real fallback for behaviour the envelope has not
+// (yet) declared.
 //
-// Why this exists: mergeTopLevelCommands below calls cobracmd.MergeCommandTree
-// on same-named top-level commands, which — at leaf conflicts — falls back to
-// "more local flags wins" via ShouldReplaceLeaf. Hardcoded helpers commands
-// typically expose more flags than the corresponding dynamic overlay leaves,
-// so a naive append would silently promote helper leaves over their dynamic
-// counterparts and append helper-only siblings into the dynamic subtree.
-// By shadowing same-named helpers upfront we keep the dynamic subtree intact
-// and let helpers only fill in products the discovery envelope did not cover.
-func pickCommands(dynamic, helpers []*cobra.Command) []*cobra.Command {
-	dynNames := make(map[string]bool, len(dynamic))
-	out := make([]*cobra.Command, 0, len(dynamic)+len(helpers))
+// Why this exists — two regressions we must prevent simultaneously:
+//
+//  1. PR #156 (the original `pickCommands`) tried to stop
+//     cobracmd.MergeCommandTree from promoting helper leaves over dynamic
+//     leaves via the "more local flags wins" rule in ShouldReplaceLeaf. Its
+//     fix was to drop any helper whose top-level name matched a dynamic
+//     command. That invariant must be preserved: dynamic leaves win over
+//     same-named helper leaves.
+//  2. Dropping the entire helper root also discards helper-only sibling
+//     commands/subtrees that the envelope never declared. When the envelope
+//     for a product (e.g. `todo`) omits a subcommand that still exists as a
+//     hardcoded helper, users lose that command silently. The `todo task list`
+//     pagination-default regression was one symptom; the broader class is
+//     "envelope coverage is a strict subset of helper coverage, but helpers
+//     are wholesale shadowed".
+//
+// Resolution: delegate same-name merging to [cmdutil.MergeHardcodedLeaves],
+// which applies the conflict table documented in [pkg/cmdutil/leaf_merge.go]
+// (dynamic absent → graft; leaf/leaf → dynamic wins; group/group → recurse;
+// shape mismatch → dynamic wins + warn). This satisfies both invariants: PR
+// #156's leaf-precedence is honoured via "leaf/leaf → dynamic wins", and
+// helper-only subtrees are grafted via "dynamic absent → graft".
+//
+// Precondition: same-name merging only runs when the dynamic root carries the
+// envelope provenance annotation (set by
+// [compat.BuildDynamicCommands] via [cmdutil.MarkEnvelopeSource]). A
+// defensive fallback drops the helper without merging if a non-envelope
+// dynamic command ever shows up with a colliding name, so helper leaves
+// cannot silently outrank an ad-hoc dynamic root either.
+func mergeDynamicWithHelpers(dynamic, helperCmds []*cobra.Command) []*cobra.Command {
+	dynByName := make(map[string]*cobra.Command, len(dynamic))
+	out := make([]*cobra.Command, 0, len(dynamic)+len(helperCmds))
 	for _, c := range dynamic {
 		if c == nil {
 			continue
 		}
-		dynNames[c.Name()] = true
+		if name := c.Name(); name != "" {
+			dynByName[name] = c
+		}
 		out = append(out, c)
 	}
-	for _, h := range helpers {
+	for _, h := range helperCmds {
 		if h == nil {
 			continue
 		}
-		if dynNames[h.Name()] {
+		name := h.Name()
+		dyn, ok := dynByName[name]
+		if !ok {
+			out = append(out, h)
 			continue
 		}
-		out = append(out, h)
+		if !cmdutil.IsEnvelopeSourced(dyn) {
+			slog.Debug("mergeDynamicWithHelpers: non-envelope dynamic shadowed helper",
+				"name", name)
+			continue
+		}
+		// Register helper Flag.DefValue → MCP-payload fallbacks BEFORE
+		// MergeHardcodedLeaves runs, because the merge may graft helper
+		// subtrees onto dyn and rewrite helperLeaf's child set. The walk
+		// is a dry read + compat.AddHelperDefault side-effect only;
+		// envelope-declared defaults always win via the registry gate
+		// and the normalizer's exists-skip rule.
+		walkLeafPairs(dyn, h)
+		cmdutil.MergeHardcodedLeaves(dyn, h)
 	}
 	return out
 }

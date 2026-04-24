@@ -298,6 +298,11 @@ func NewDirectCommand(route Route, runner executor.Runner) *cobra.Command {
 	}
 
 	ApplyBindings(cmd, route.Bindings)
+	// Register with the helper-default fallback registry so app-layer
+	// mergers (internal/app.mergeDynamicWithHelpers) can later inject
+	// helper Flag.DefValue fallbacks for params the envelope did not
+	// declare a Default for. See internal/compat/helper_defaults.go.
+	registerRouteForHelperDefaults(cmd, route.Bindings)
 	return cmd
 }
 
@@ -315,6 +320,30 @@ func NewCuratedCommand(route Route, runner executor.Runner) *cobra.Command {
 // "no default in --help" rather than a panic at startup. The slice form
 // splits on commas and trims whitespace, mirroring pflag.StringSlice
 // behavior; empty/whitespace-only segments are dropped.
+// writeDefaultByKind writes a Kind-coerced default value into params under
+// name. Shared by every default-injection loop in the normalizer (envelope
+// defaultInjects, helper fallback defaults) so the Kind → primitive
+// dispatch stays in one place.
+//
+// Callers are expected to check `if _, exists := params[name]; exists`
+// themselves, since each loop may want a different "skip" rule beyond the
+// standard exists-skip (none today, but kept pure for symmetry).
+func writeDefaultByKind(params map[string]any, name string, kind ValueKind, raw string) {
+	defStr, defInt, defFloat, defBool, defSlice := parseFlagDefault(kind, raw)
+	switch kind {
+	case ValueInt:
+		params[name] = defInt
+	case ValueFloat:
+		params[name] = defFloat
+	case ValueBool:
+		params[name] = defBool
+	case ValueStringSlice, ValueIntSlice, ValueFloatSlice, ValueBoolSlice:
+		params[name] = defSlice
+	default: // ValueString, ValueJSON, and any unknown kind
+		params[name] = defStr
+	}
+}
+
 func parseFlagDefault(kind ValueKind, raw string) (defStr string, defInt int, defFloat float64, defBool bool, defSlice []string) {
 	trimmed := strings.TrimSpace(raw)
 	switch kind {

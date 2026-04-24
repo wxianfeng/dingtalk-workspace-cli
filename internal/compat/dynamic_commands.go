@@ -675,22 +675,17 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 		}
 	}
 
-	// Check if we need a normalizer: transforms, env defaults, hidden defaults,
-	// runtime defaults, omit-when overrides, dotted property paths, or body wrapper.
-	needsDottedNesting := false
-	for _, b := range bindings {
-		if strings.Contains(b.Property, ".") {
-			needsDottedNesting = true
-			break
-		}
-	}
 	bodyWrapper := strings.TrimSpace(override.BodyWrapper)
-	if len(transforms) == 0 && len(envDefaults) == 0 && len(defaultInjects) == 0 && len(runtimeDefaults) == 0 && len(omits) == 0 && !needsDottedNesting && bodyWrapper == "" {
-		return bindings, nil
-	}
+	// Note: we always produce a normalizer even when every envelope-declared
+	// injection list is empty, because helper_defaults.AddHelperDefault lets
+	// internal/app.mergeDynamicWithHelpers register fallbacks at runtime.
+	// The normalizer looks those up via helperDefaultsFor(cmd) and fast-paths
+	// cleanly when nothing is registered, so the overhead of the no-op call
+	// is a single sync.Map miss per RunE. nestDottedPaths and the other
+	// no-op branches below are all cheap enough to run unconditionally.
 
 	// Build a normalizer that applies default injections + env defaults + runtime defaults
-	// + transforms + omitWhen + nesting + body wrap.
+	// + helper defaults (fallback) + transforms + omitWhen + nesting + body wrap.
 	normalizer := func(cmd *cobra.Command, params map[string]any) error {
 		// §v3.2: Apply envelope flag.default for parameters not explicitly set.
 		// Coerce by Kind so number-typed schemas don't reject string defaults.
@@ -698,19 +693,7 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 			if _, exists := params[di.paramName]; exists {
 				continue
 			}
-			defStr, defInt, defFloat, defBool, defSlice := parseFlagDefault(di.kind, di.defaultValue)
-			switch di.kind {
-			case ValueInt:
-				params[di.paramName] = defInt
-			case ValueFloat:
-				params[di.paramName] = defFloat
-			case ValueBool:
-				params[di.paramName] = defBool
-			case ValueStringSlice, ValueIntSlice, ValueFloatSlice, ValueBoolSlice:
-				params[di.paramName] = defSlice
-			default: // ValueString, ValueJSON, and any unknown kind
-				params[di.paramName] = defStr
-			}
+			writeDefaultByKind(params, di.paramName, di.kind, di.defaultValue)
 		}
 
 		// Apply environment variable defaults for parameters not explicitly set
@@ -740,6 +723,19 @@ func buildOverrideBindings(override market.CLIToolOverride) ([]FlagBinding, Norm
 					params[rd.paramName] = val
 				}
 			}
+		}
+
+		// §v3.3: Helper default fallback. Registered at app-layer merge time
+		// via compat.AddHelperDefault when a hardcoded helper leaf carries a
+		// cobra Flag.DefValue for a parameter the envelope did not declare
+		// a Default for. Shares the exists-skip rule so envelope / env /
+		// runtime defaults (and user input via CollectBindings) always win.
+		// See internal/compat/helper_defaults.go for the contract.
+		for _, hd := range helperDefaultsFor(cmd) {
+			if _, exists := params[hd.paramName]; exists {
+				continue
+			}
+			writeDefaultByKind(params, hd.paramName, hd.kind, hd.defaultValue)
 		}
 
 		// §3: Apply transforms

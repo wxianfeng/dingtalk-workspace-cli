@@ -26,14 +26,35 @@ import (
 // behaviour the envelope explicitly does not declare. See
 // _docs/discovery-overlay-authority.md.
 //
+// SUBTLETY — helper default fallback (see internal/compat/helper_defaults.go):
+// When dynamic and hardcoded leaves collide (row "leaf / leaf"), the hardcoded
+// leaf is dropped here, but its cobra `Flag.DefValue`s may still influence the
+// MCP payload via the *helper default fallback* channel. That registration
+// happens upstream of MergeHardcodedLeaves (open-core
+// internal/app.walkLeafPairs, wukong overlay equivalents) by calling
+// compat.AddHelperDefault on the envelope-sourced leaf before this function
+// runs. Once registered, the compat normalizer injects those defaults into
+// the MCP params only for properties the envelope itself did not declare a
+// `default` for — so the "envelope is authority" rule is preserved: the
+// moment the server-side envelope ships a Default for the same property, the
+// helper fallback becomes a no-op (envelope wins via exists-skip in the
+// normalizer). This fallback is transparent to the leaf_merge contract;
+// MergeHardcodedLeaves itself does nothing with DefValue.
+//
 // PRECONDITION: dynamicRoot must be envelope-sourced (carry the
 // SourceAnnotation=SourceEnvelope marker set by BuildDynamicCommands via
 // MarkEnvelopeSource). Callers that might otherwise pass a helper-fallback
 // root with the same name are responsible for evicting it upstream —
 // otherwise the "envelope is authority" rule silently promotes helper leaves
 // over same-named hardcoded leaves and the overlay loses its ability to
-// override routing. The wukong overlay's RegisterProducts gates this call on
-// IsEnvelopeSourced(dynamicRoot); new callers must do the same.
+// override routing.
+//
+// Known callers that already enforce this gate via IsEnvelopeSourced:
+//   - wukong overlay's RegisterProducts (pre-eviction of helper stubs).
+//   - open-core internal/app.mergeDynamicWithHelpers (defensive shadow
+//     when the dynamic root is not envelope-sourced).
+//
+// New callers must do the same.
 //
 // Conflict resolution table:
 //
