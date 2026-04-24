@@ -27,7 +27,7 @@ Flags:
       --cursor string   邮件的起始偏移标识, 其值取自响应中的nextCursor字段。""表示从头开始
       --email string    搜索目标邮箱地址 (必填)
       --query string    KQL 查询表达式 (必填), 其中 date 格式需遵循 ISO8601 规范
-      --size string     每页返回数量(最大限制 100, 默认 20)，别名: --limit, --page-size
+      --size string     每页返回数量(最大限制 100, 默认 20) (必填)，别名: --limit, --page-size
 ```
 
 KQL 查询字段: date, size, tag, folderId, isRead, hasAttachments, subject, attachname, body, from, to
@@ -95,7 +95,7 @@ Example:
   dws mail message send --from user@company.com --to colleague@company.com \
     --subject "周报" --body "本周完成任务A和任务B"
 Flags:
-      --body string      邮件正文 (必填)
+      --body string      邮件正文，支持 Markdown 格式 (必填)
       --cc string        抄送人列表
       --from string      发件人邮箱 (必填)，别名: --sender
       --subject string   邮件标题 (必填)
