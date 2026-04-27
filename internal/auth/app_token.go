@@ -35,36 +35,25 @@ const (
 	tokenExpiryBuffer = 5 * time.Minute
 )
 
-// AppTokenData stores app-level access tokens (not user-level OAuth tokens).
-// New-style and legacy API tokens are stored separately because they are not interchangeable.
+// AppTokenData stores the app-level access token obtained from the unified
+// POST /v1.0/oauth2/accessToken endpoint. It works for both new-style
+// (api.dingtalk.com) and legacy (oapi.dingtalk.com) APIs — the auth method
+// (header vs query param) is chosen by the caller based on the target host.
 type AppTokenData struct {
-	// New API token (api.dingtalk.com)
-	NewAccessToken string    `json:"new_access_token,omitempty"`
-	NewExpiresAt   time.Time `json:"new_expires_at,omitempty"`
-
-	// Legacy API token (oapi.dingtalk.com)
-	LegacyAccessToken string    `json:"legacy_access_token,omitempty"`
-	LegacyExpiresAt   time.Time `json:"legacy_expires_at,omitempty"`
+	AccessToken string    `json:"access_token,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 
 	// Associated app credentials
 	ClientID  string    `json:"client_id"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// IsNewTokenValid returns true if the new-style API token has not expired.
-func (d *AppTokenData) IsNewTokenValid() bool {
-	if d == nil || d.NewAccessToken == "" {
+// IsTokenValid returns true if the access token has not expired.
+func (d *AppTokenData) IsTokenValid() bool {
+	if d == nil || d.AccessToken == "" {
 		return false
 	}
-	return time.Now().Before(d.NewExpiresAt.Add(-tokenExpiryBuffer))
-}
-
-// IsLegacyTokenValid returns true if the legacy API token has not expired.
-func (d *AppTokenData) IsLegacyTokenValid() bool {
-	if d == nil || d.LegacyAccessToken == "" {
-		return false
-	}
-	return time.Now().Before(d.LegacyExpiresAt.Add(-tokenExpiryBuffer))
+	return time.Now().Before(d.ExpiresAt.Add(-tokenExpiryBuffer))
 }
 
 // SaveAppTokenData persists AppTokenData to keychain, keyed by clientID.
@@ -121,14 +110,16 @@ func DeleteAppTokenData(clientID string) error {
 	return keychain.Remove(keychain.Service, account)
 }
 
-// --- Token Fetch Functions ---
+// --- Token Fetch Function ---
 
-// FetchNewAPIToken obtains a new-style app access token from:
+// FetchAppToken obtains an app-level access token from the unified endpoint:
 //
 //	POST https://api.dingtalk.com/v1.0/oauth2/accessToken
 //	Body: {"appKey":"X","appSecret":"X"}
 //	Response: {"accessToken":"xxx","expireIn":7200}
-func FetchNewAPIToken(ctx context.Context, appKey, appSecret string) (token string, expiresIn int64, err error) {
+//
+// The same token works for both api.dingtalk.com and oapi.dingtalk.com.
+func FetchAppToken(ctx context.Context, appKey, appSecret string) (token string, expiresIn int64, err error) {
 	body := map[string]string{
 		"appKey":    appKey,
 		"appSecret": appSecret,
@@ -146,7 +137,7 @@ func FetchNewAPIToken(ctx context.Context, appKey, appSecret string) (token stri
 
 	resp, err := appTokenHTTPClient.Do(req)
 	if err != nil {
-		return "", 0, fmt.Errorf("fetching new API token: %w", err)
+		return "", 0, fmt.Errorf("fetching app token: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -156,7 +147,7 @@ func FetchNewAPIToken(ctx context.Context, appKey, appSecret string) (token stri
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("获取新版 API token 失败 (HTTP %d): %s", resp.StatusCode, truncateStr(string(respBody), 200))
+		return "", 0, fmt.Errorf("获取 app token 失败 (HTTP %d): %s", resp.StatusCode, truncateStr(string(respBody), 200))
 	}
 
 	var result struct {
@@ -164,62 +155,15 @@ func FetchNewAPIToken(ctx context.Context, appKey, appSecret string) (token stri
 		ExpireIn    int64  `json:"expireIn"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", 0, fmt.Errorf("parsing new API token response: %w", err)
+		return "", 0, fmt.Errorf("parsing app token response: %w", err)
 	}
 	if result.AccessToken == "" {
-		return "", 0, fmt.Errorf("新版 API token 响应缺少 accessToken 字段")
+		return "", 0, fmt.Errorf("app token 响应缺少 accessToken 字段")
 	}
 	if result.ExpireIn <= 0 {
 		result.ExpireIn = config.DefaultAccessTokenExpiry
 	}
 	return result.AccessToken, result.ExpireIn, nil
-}
-
-// FetchLegacyAPIToken obtains a legacy app access token from:
-//
-//	GET https://oapi.dingtalk.com/gettoken?appkey=X&appsecret=X
-//	Response: {"errcode":0,"access_token":"xxx","errmsg":"ok","expires_in":7200}
-func FetchLegacyAPIToken(ctx context.Context, appKey, appSecret string) (token string, expiresIn int64, err error) {
-	u := LegacyGetTokenURL + "?appkey=" + appKey + "&appsecret=" + appSecret
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return "", 0, fmt.Errorf("creating request: %w", err)
-	}
-
-	resp, err := appTokenHTTPClient.Do(req)
-	if err != nil {
-		return "", 0, fmt.Errorf("fetching legacy API token: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, config.MaxResponseBodySize))
-	if err != nil {
-		return "", 0, fmt.Errorf("reading response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", 0, fmt.Errorf("获取旧版 API token 失败 (HTTP %d): %s", resp.StatusCode, truncateStr(string(respBody), 200))
-	}
-
-	var result struct {
-		ErrCode     int    `json:"errcode"`
-		ErrMsg      string `json:"errmsg"`
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
-	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", 0, fmt.Errorf("parsing legacy API token response: %w", err)
-	}
-	if result.ErrCode != 0 {
-		return "", 0, fmt.Errorf("获取旧版 API token 业务错误 (errcode: %d): %s", result.ErrCode, result.ErrMsg)
-	}
-	if result.AccessToken == "" {
-		return "", 0, fmt.Errorf("旧版 API token 响应缺少 access_token 字段")
-	}
-	if result.ExpiresIn <= 0 {
-		result.ExpiresIn = config.DefaultAccessTokenExpiry
-	}
-	return result.AccessToken, result.ExpiresIn, nil
 }
 
 // --- AppTokenProvider ---
@@ -232,10 +176,9 @@ type AppTokenProvider struct {
 	HTTPClient *http.Client // injectable for testing; nil uses default
 }
 
-// GetToken returns a valid app-level access token for the given API style.
-// isLegacy=true returns a legacy (oapi) token; false returns a new-style (api) token.
+// GetToken returns a valid app-level access token.
 // Tokens are cached in keychain and auto-refreshed when expired (with 5-min buffer).
-func (p *AppTokenProvider) GetToken(ctx context.Context, isLegacy bool) (string, error) {
+func (p *AppTokenProvider) GetToken(ctx context.Context) (string, error) {
 	if p.AppKey == "" || p.AppSecret == "" {
 		return "", fmt.Errorf("缺少应用凭证 (appKey/appSecret)，请通过 --client-id/--client-secret 指定或先执行 dws auth login")
 	}
@@ -247,13 +190,8 @@ func (p *AppTokenProvider) GetToken(ctx context.Context, isLegacy bool) (string,
 	}
 
 	// Fast path: cached token is still valid.
-	if data != nil {
-		if isLegacy && data.IsLegacyTokenValid() {
-			return data.LegacyAccessToken, nil
-		}
-		if !isLegacy && data.IsNewTokenValid() {
-			return data.NewAccessToken, nil
-		}
+	if data != nil && data.IsTokenValid() {
+		return data.AccessToken, nil
 	}
 
 	// Slow path: fetch a new token.
@@ -262,21 +200,12 @@ func (p *AppTokenProvider) GetToken(ctx context.Context, isLegacy bool) (string,
 	}
 
 	now := time.Now()
-	if isLegacy {
-		token, expiresIn, fetchErr := FetchLegacyAPIToken(ctx, p.AppKey, p.AppSecret)
-		if fetchErr != nil {
-			return "", fetchErr
-		}
-		data.LegacyAccessToken = token
-		data.LegacyExpiresAt = now.Add(time.Duration(expiresIn) * time.Second)
-	} else {
-		token, expiresIn, fetchErr := FetchNewAPIToken(ctx, p.AppKey, p.AppSecret)
-		if fetchErr != nil {
-			return "", fetchErr
-		}
-		data.NewAccessToken = token
-		data.NewExpiresAt = now.Add(time.Duration(expiresIn) * time.Second)
+	token, expiresIn, fetchErr := FetchAppToken(ctx, p.AppKey, p.AppSecret)
+	if fetchErr != nil {
+		return "", fetchErr
 	}
+	data.AccessToken = token
+	data.ExpiresAt = now.Add(time.Duration(expiresIn) * time.Second)
 
 	// Persist updated token data.
 	if saveErr := SaveAppTokenData(data); saveErr != nil {
@@ -284,10 +213,7 @@ func (p *AppTokenProvider) GetToken(ctx context.Context, isLegacy bool) (string,
 		fmt.Printf("Warning: 无法缓存 app token: %v\n", saveErr)
 	}
 
-	if isLegacy {
-		return data.LegacyAccessToken, nil
-	}
-	return data.NewAccessToken, nil
+	return data.AccessToken, nil
 }
 
 // truncateStr truncates a string to maxLen characters.

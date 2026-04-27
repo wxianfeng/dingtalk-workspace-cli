@@ -14,6 +14,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -22,37 +23,17 @@ import (
 	"time"
 )
 
-func TestAppTokenData_IsNewTokenValid(t *testing.T) {
-	tests := []struct {
-		name string
-		data *AppTokenData
-		want bool
-	}{
-		{"nil data", nil, false},
-		{"empty token", &AppTokenData{}, false},
-		{"expired", &AppTokenData{
-			NewAccessToken: "tok",
-			NewExpiresAt:   time.Now().Add(-1 * time.Minute),
-		}, false},
-		{"within buffer", &AppTokenData{
-			NewAccessToken: "tok",
-			NewExpiresAt:   time.Now().Add(3 * time.Minute), // 3 min < 5 min buffer
-		}, false},
-		{"valid", &AppTokenData{
-			NewAccessToken: "tok",
-			NewExpiresAt:   time.Now().Add(10 * time.Minute),
-		}, true},
+// mustJSONBody returns a *bytes.Buffer containing the JSON encoding of v, or fails the test.
+func mustJSONBody(t *testing.T, v any) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		t.Fatalf("json encode: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.data.IsNewTokenValid(); got != tt.want {
-				t.Errorf("IsNewTokenValid() = %v, want %v", got, tt.want)
-			}
-		})
-	}
+	return &buf
 }
 
-func TestAppTokenData_IsLegacyTokenValid(t *testing.T) {
+func TestAppTokenData_IsTokenValid(t *testing.T) {
 	tests := []struct {
 		name string
 		data *AppTokenData
@@ -61,18 +42,22 @@ func TestAppTokenData_IsLegacyTokenValid(t *testing.T) {
 		{"nil data", nil, false},
 		{"empty token", &AppTokenData{}, false},
 		{"expired", &AppTokenData{
-			LegacyAccessToken: "tok",
-			LegacyExpiresAt:   time.Now().Add(-1 * time.Minute),
+			AccessToken: "tok",
+			ExpiresAt:   time.Now().Add(-1 * time.Minute),
+		}, false},
+		{"within buffer", &AppTokenData{
+			AccessToken: "tok",
+			ExpiresAt:   time.Now().Add(3 * time.Minute), // 3 min < 5 min buffer
 		}, false},
 		{"valid", &AppTokenData{
-			LegacyAccessToken: "tok",
-			LegacyExpiresAt:   time.Now().Add(10 * time.Minute),
+			AccessToken: "tok",
+			ExpiresAt:   time.Now().Add(10 * time.Minute),
 		}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.data.IsLegacyTokenValid(); got != tt.want {
-				t.Errorf("IsLegacyTokenValid() = %v, want %v", got, tt.want)
+			if got := tt.data.IsTokenValid(); got != tt.want {
+				t.Errorf("IsTokenValid() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -80,12 +65,10 @@ func TestAppTokenData_IsLegacyTokenValid(t *testing.T) {
 
 func TestAppTokenData_JSONRoundTrip(t *testing.T) {
 	original := &AppTokenData{
-		NewAccessToken:    "new-tok-abc",
-		NewExpiresAt:      time.Now().Add(2 * time.Hour).Truncate(time.Second),
-		LegacyAccessToken: "legacy-tok-xyz",
-		LegacyExpiresAt:   time.Now().Add(2 * time.Hour).Truncate(time.Second),
-		ClientID:          "my-app-key",
-		UpdatedAt:         time.Now().Truncate(time.Second),
+		AccessToken: "app-tok-abc",
+		ExpiresAt:   time.Now().Add(2 * time.Hour).Truncate(time.Second),
+		ClientID:    "my-app-key",
+		UpdatedAt:   time.Now().Truncate(time.Second),
 	}
 
 	data, err := json.Marshal(original)
@@ -98,29 +81,41 @@ func TestAppTokenData_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if decoded.NewAccessToken != original.NewAccessToken {
-		t.Errorf("NewAccessToken = %q, want %q", decoded.NewAccessToken, original.NewAccessToken)
-	}
-	if decoded.LegacyAccessToken != original.LegacyAccessToken {
-		t.Errorf("LegacyAccessToken = %q, want %q", decoded.LegacyAccessToken, original.LegacyAccessToken)
+	if decoded.AccessToken != original.AccessToken {
+		t.Errorf("AccessToken = %q, want %q", decoded.AccessToken, original.AccessToken)
 	}
 	if decoded.ClientID != original.ClientID {
 		t.Errorf("ClientID = %q, want %q", decoded.ClientID, original.ClientID)
 	}
 }
 
-func TestFetchNewAPIToken_Success(t *testing.T) {
+func TestFetchAppToken_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
+		}
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		if body["appKey"] != "mykey" || body["appSecret"] != "mysecret" {
+			t.Errorf("got body %v, want appKey=mykey, appSecret=mysecret", body)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		json.NewEncoder(w).Encode(map[string]any{
-			"accessToken": "new-tok-123",
+			"accessToken": "app-tok-123",
 			"expireIn":    7200,
 		})
 	}))
 	defer srv.Close()
 
-	resp, err := srv.Client().Post(srv.URL, "application/json", nil)
+	body := mustJSONBody(t, map[string]string{
+		"appKey":    "mykey",
+		"appSecret": "mysecret",
+	})
+	resp, err := srv.Client().Post(srv.URL, "application/json", body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,74 +125,41 @@ func TestFetchNewAPIToken_Success(t *testing.T) {
 		ExpireIn    int64  `json:"expireIn"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
-	if result.AccessToken != "new-tok-123" {
-		t.Errorf("got token %q, want new-tok-123", result.AccessToken)
+	if result.AccessToken != "app-tok-123" {
+		t.Errorf("got token %q, want app-tok-123", result.AccessToken)
 	}
 	if result.ExpireIn != 7200 {
 		t.Errorf("got expireIn %d, want 7200", result.ExpireIn)
 	}
 }
 
-func TestFetchLegacyAPIToken_Success(t *testing.T) {
+func TestFetchAppToken_EmptyToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		json.NewEncoder(w).Encode(map[string]any{
-			"errcode":      0,
-			"errmsg":       "ok",
-			"access_token": "legacy-tok-456",
-			"expires_in":   7200,
+			"accessToken": "",
+			"expireIn":    7200,
 		})
 	}))
 	defer srv.Close()
 
-	resp, err := srv.Client().Get(srv.URL + "?appkey=mykey&appsecret=mysecret")
+	body := mustJSONBody(t, map[string]string{
+		"appKey":    "badkey",
+		"appSecret": "badsecret",
+	})
+	resp, err := srv.Client().Post(srv.URL, "application/json", body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	var result struct {
-		ErrCode     int    `json:"errcode"`
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
+		AccessToken string `json:"accessToken"`
+		ExpireIn    int64  `json:"expireIn"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
-	if result.ErrCode != 0 {
-		t.Errorf("got errcode %d, want 0", result.ErrCode)
-	}
-	if result.AccessToken != "legacy-tok-456" {
-		t.Errorf("got token %q, want legacy-tok-456", result.AccessToken)
-	}
-	if result.ExpiresIn != 7200 {
-		t.Errorf("got expires_in %d, want 7200", result.ExpiresIn)
-	}
-}
-
-func TestFetchLegacyAPIToken_BusinessError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		json.NewEncoder(w).Encode(map[string]any{
-			"errcode":      40014,
-			"errmsg":       "invalid appkey",
-			"access_token": "",
-			"expires_in":   0,
-		})
-	}))
-	defer srv.Close()
-
-	resp, err := srv.Client().Get(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var result struct {
-		ErrCode int    `json:"errcode"`
-		ErrMsg  string `json:"errmsg"`
-	}
-	json.NewDecoder(resp.Body).Decode(&result)
-	if result.ErrCode != 40014 {
-		t.Errorf("got errcode %d, want 40014", result.ErrCode)
+	if result.AccessToken != "" {
+		t.Errorf("expected empty accessToken, got %q", result.AccessToken)
 	}
 }
 
@@ -207,7 +169,7 @@ func TestAppTokenProvider_GetToken_MissingCredentials(t *testing.T) {
 		AppKey:    "",
 		AppSecret: "",
 	}
-	_, err := provider.GetToken(context.Background(), false)
+	_, err := provider.GetToken(context.Background())
 	if err == nil {
 		t.Error("expected error for missing credentials")
 	}

@@ -15,6 +15,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -102,7 +103,7 @@ func newAPICommand(flags *GlobalFlags) *cobra.Command {
 	cmd.Flags().StringVar(&af.params, "params", "", "查询参数 JSON (支持 - 从 stdin 读取)")
 	cmd.Flags().StringVar(&af.data, "data", "", "请求体 JSON (支持 - 从 stdin 读取)")
 	cmd.Flags().BoolVar(&af.pageAll, "page-all", false, "自动遍历所有分页")
-	cmd.Flags().IntVar(&af.pageLimit, "page-limit", apiclient.DefaultPageLimit, "最大分页数 (0 = 无限)")
+	cmd.Flags().IntVar(&af.pageLimit, "page-limit", apiclient.DefaultPageLimit, "最大翻页数 (0=不限, 默认10, 硬上限500)")
 	cmd.Flags().IntVar(&af.pageDelay, "page-delay", apiclient.DefaultPageDelay, "分页间隔毫秒")
 	cmd.Flags().StringVar(&af.baseURL, "base-url", "", "覆盖 API 基础 URL (默认 https://api.dingtalk.com)")
 
@@ -114,6 +115,19 @@ func runAPI(cmd *cobra.Command, args []string, gf *GlobalFlags, af *apiFlags) er
 	ctx := cmd.Context()
 	method := args[0]
 	path := args[1]
+
+	// 0. Reject path with inline query string — must use --params instead.
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		cleanPath := path[:idx]
+		// Parse query string to generate the exact --params JSON for the user.
+		paramsJSON := parseQueryStringToJSON(path[idx+1:])
+		return apperrors.NewValidation(
+			"API 路径中不允许直接拼接查询参数（?key=value），该写法会导致参数在解析时被静默丢弃。\n\n"+
+				"命令格式可参考：\n\n"+
+				" dws api "+method+" "+cleanPath+" --params '"+paramsJSON+"'",
+			apperrors.WithHint("查询参数必须通过 --params 传递，形如 --params '{\"key\":\"value\"}'"),
+		)
+	}
 
 	// 1. Validate HTTP method.
 	method, err := apiclient.ValidateMethod(method)
@@ -154,19 +168,18 @@ func runAPI(cmd *cobra.Command, args []string, gf *GlobalFlags, af *apiFlags) er
 		return apperrors.NewValidation(err.Error())
 	}
 
-	// 7. Determine API style (new vs legacy) for token resolution.
+	// 7. Normalise and validate target URL.
 	fullURL := apiclient.NormalisePath(path, af.baseURL)
-	isLegacy := apiclient.IsLegacyAPI(fullURL)
 
 	// 7b. Security: validate target host is a trusted DingTalk domain.
 	if err := apiclient.ValidateTargetHost(fullURL); err != nil {
 		return apperrors.NewValidation(err.Error())
 	}
 
-	// 8. Resolve app-level token based on API style (with timeout).
+	// 8. Resolve app-level token (with timeout).
 	tokenCtx, tokenCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer tokenCancel()
-	token, err := resolveRawAPIToken(tokenCtx, gf.Token, isLegacy)
+	token, err := resolveRawAPIToken(tokenCtx, gf.Token)
 	if err != nil {
 		return err
 	}
@@ -219,6 +232,7 @@ func runPaginated(ctx context.Context, client *apiclient.APIClient, req apiclien
 	pages, err := client.PaginateAll(ctx, req, apiclient.PaginationOptions{
 		PageLimit: af.pageLimit,
 		PageDelay: af.pageDelay,
+		LogWriter: opts.ErrOut,
 	})
 	if err != nil && len(pages) == 0 {
 		return apperrors.NewAPI(fmt.Sprintf("分页请求失败: %v", err))
@@ -228,13 +242,47 @@ func runPaginated(ctx context.Context, client *apiclient.APIClient, req apiclien
 	return output.WriteFiltered(opts.Out, opts.Format, pages, opts.Fields, opts.JqExpr)
 }
 
+// parseQueryStringToJSON parses a raw URL query string into a JSON object string.
+// Uses simple & and = splitting (no URL decoding) to preserve values as-is.
+func parseQueryStringToJSON(rawQuery string) string {
+	rawQuery = strings.TrimSpace(rawQuery)
+	if rawQuery == "" {
+		return "{}"
+	}
+
+	paramsMap := make(map[string]any)
+	for _, pair := range strings.Split(rawQuery, "&") {
+		kv := strings.SplitN(pair, "=", 2)
+		key := strings.TrimSpace(kv[0])
+		if key == "" {
+			continue
+		}
+		var val string
+		if len(kv) == 2 {
+			val = strings.TrimSpace(kv[1])
+		}
+		if val == "" {
+			continue // skip empty values like nextToken=
+		}
+		paramsMap[key] = val
+	}
+
+	if len(paramsMap) == 0 {
+		return "{}"
+	}
+
+	data, err := json.Marshal(paramsMap)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
 // resolveRawAPIToken resolves an app-level access token for raw API calls.
-// It uses AppTokenProvider to obtain the correct token type based on API style:
-//   - isLegacy=false: fetches from POST api.dingtalk.com/v1.0/oauth2/accessToken
-//   - isLegacy=true:  fetches from GET oapi.dingtalk.com/gettoken
-//
+// It uses AppTokenProvider to fetch from the unified POST /v1.0/oauth2/accessToken
+// endpoint. The same token works for both api.dingtalk.com and oapi.dingtalk.com.
 // Tokens are cached in keychain and auto-refreshed when expired.
-func resolveRawAPIToken(ctx context.Context, explicitToken string, isLegacy bool) (string, error) {
+func resolveRawAPIToken(ctx context.Context, explicitToken string) (string, error) {
 	// Explicit --token flag takes priority (user knows what they're doing).
 	if t := strings.TrimSpace(explicitToken); t != "" {
 		return t, nil
@@ -265,7 +313,7 @@ func resolveRawAPIToken(ctx context.Context, explicitToken string, isLegacy bool
 		AppKey:    appKey,
 		AppSecret: appSecret,
 	}
-	token, err := provider.GetToken(ctx, isLegacy)
+	token, err := provider.GetToken(ctx)
 	if err != nil {
 		return "", apperrors.NewAuth(fmt.Sprintf("获取应用级访问令牌失败: %v", err))
 	}

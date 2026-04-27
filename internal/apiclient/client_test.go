@@ -14,11 +14,13 @@
 package apiclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +57,7 @@ func TestNormalisePath(t *testing.T) {
 }
 
 func TestDo_Success(t *testing.T) {
+	AllowedHosts["127.0.0.1"] = true
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(AuthHeader) != "test-token" {
 			t.Errorf("expected auth header %q, got %q", "test-token", r.Header.Get(AuthHeader))
@@ -82,6 +85,7 @@ func TestDo_Success(t *testing.T) {
 }
 
 func TestDo_PostWithBody(t *testing.T) {
+	AllowedHosts["127.0.0.1"] = true
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			t.Errorf("expected POST, got %s", r.Method)
@@ -125,6 +129,7 @@ func TestDo_InvalidMethod(t *testing.T) {
 }
 
 func TestDo_QueryParams(t *testing.T) {
+	AllowedHosts["127.0.0.1"] = true
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("pageSize") != "10" {
 			t.Errorf("expected pageSize=10, got %v", r.URL.Query())
@@ -238,5 +243,84 @@ func TestNormalisePath_Legacy(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("NormalisePath(%q, %q) = %q, want %q", tt.path, tt.base, got, tt.want)
 		}
+	}
+}
+
+func TestResolvePageLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		raw, want int
+	}{
+		// 0 → unlimited → safety cap
+		{0, MaxPageLimit},
+		// normal usage
+		{3, 3},
+		// default
+		{10, 10},
+		// within cap
+		{100, 100},
+		// exactly cap
+		{MaxPageLimit, MaxPageLimit},
+		// exceeds cap
+		{MaxPageLimit + 100, MaxPageLimit},
+		// negative → default
+		{-1, DefaultPageLimit},
+		{-100, DefaultPageLimit},
+	}
+	for _, tt := range tests {
+		got := resolvePageLimit(tt.raw)
+		if got != tt.want {
+			t.Errorf("resolvePageLimit(%d) = %d, want %d", tt.raw, got, tt.want)
+		}
+	}
+}
+
+func TestPaginateAll_ProgressLog(t *testing.T) {
+	AllowedHosts["127.0.0.1"] = true
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount >= 3 {
+			json.NewEncoder(w).Encode(map[string]any{
+				"result": map[string]any{"has_more": false, "items": []any{1, 2}},
+			})
+		} else {
+			json.NewEncoder(w).Encode(map[string]any{
+				"result": map[string]any{
+					"has_more":    true,
+					"next_cursor": 100,
+					"items":       []any{callCount},
+				},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient("test-token", srv.URL)
+
+	var logBuf bytes.Buffer
+	pages, err := c.PaginateAll(context.Background(), RawAPIRequest{
+		Method: "GET",
+		Path:   "/v1.0/test",
+	}, PaginationOptions{
+		PageLimit: 5,
+		PageDelay: 0,
+		LogWriter: &logBuf,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pages) != 3 {
+		t.Errorf("expected 3 pages, got %d", len(pages))
+	}
+
+	log := logBuf.String()
+	if !strings.Contains(log, "第 1 页") || !strings.Contains(log, "第 2 页") || !strings.Contains(log, "第 3 页") {
+		t.Errorf("expected progress log for each page, got: %s", log)
+	}
+	if !strings.Contains(log, "数据获取完成") {
+		t.Errorf("expected completion message, got: %s", log)
 	}
 }

@@ -17,21 +17,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 )
 
 const (
-	// DefaultPageLimit is the maximum number of pages fetched with --page-all.
+	// DefaultPageLimit is the maximum number of pages fetched with --page-all
+	// when --page-limit is not explicitly set.
 	DefaultPageLimit = 10
+
+	// MaxPageLimit is the hard safety cap to prevent infinite loops when an
+	// API endpoint has a bug that causes has_more to never become false.
+	// Use --page-limit 0 to hit this cap; any explicit positive value is
+	// honoured up to this ceiling.
+	MaxPageLimit = 500
 
 	// DefaultPageDelay is the delay between paginated requests in milliseconds.
 	DefaultPageDelay = 200
 )
 
-// PaginationOptions controls automatic pagination behavior.
+// PaginationOptions controls automatic pagination behaviour.
 type PaginationOptions struct {
-	PageLimit int // Maximum pages (0 = unlimited)
-	PageDelay int // Delay between pages in milliseconds
+	PageLimit int       // Maximum pages (0 = unlimited, capped at MaxPageLimit)
+	PageDelay int       // Delay between pages in milliseconds
+	LogWriter io.Writer // Optional: progress log output (typically stderr)
 }
 
 // PaginateAll fetches all pages of a paginated API and merges the results.
@@ -41,9 +50,7 @@ type PaginationOptions struct {
 //
 // The function auto-detects which pattern the API uses.
 func (c *APIClient) PaginateAll(ctx context.Context, req RawAPIRequest, opts PaginationOptions) ([]any, error) {
-	if opts.PageLimit == 0 {
-		opts.PageLimit = DefaultPageLimit
-	}
+	limit := resolvePageLimit(opts.PageLimit)
 	if opts.PageDelay <= 0 {
 		opts.PageDelay = DefaultPageDelay
 	}
@@ -53,9 +60,14 @@ func (c *APIClient) PaginateAll(ctx context.Context, req RawAPIRequest, opts Pag
 
 	for {
 		pageCount++
-		if opts.PageLimit > 0 && pageCount > opts.PageLimit {
+
+		// Safety cap — only break if a carry is active (pageCount > 1).
+		if limit > 0 && pageCount > limit {
+			logf(opts.LogWriter, "[pagination] ⚠ 已达安全上限 %d 页，停止翻页。数据可能不完整，请检查 API 是否异常。\n", limit)
 			break
 		}
+
+		logf(opts.LogWriter, "[pagination] 第 %d 页 请求中...\n", pageCount)
 
 		resp, err := c.Do(ctx, req)
 		if err != nil {
@@ -77,6 +89,7 @@ func (c *APIClient) PaginateAll(ctx context.Context, req RawAPIRequest, opts Pag
 		allResults = append(allResults, result)
 
 		if !hasMore || nextToken == "" {
+			logf(opts.LogWriter, "[pagination] 数据获取完成 (共 %d 页)\n", pageCount)
 			break
 		}
 
@@ -92,6 +105,31 @@ func (c *APIClient) PaginateAll(ctx context.Context, req RawAPIRequest, opts Pag
 	}
 
 	return allResults, nil
+}
+
+// resolvePageLimit translates the user-facing value into an internal limit:
+//
+//	0           → MaxPageLimit (user wants unlimited; safety cap applies)
+//	positive N  → min(N, MaxPageLimit) (explicit page limit, still capped)
+//	negative    → DefaultPageLimit (invalid input treated as default)
+func resolvePageLimit(raw int) int {
+	if raw == 0 {
+		return MaxPageLimit
+	}
+	if raw < 0 {
+		return DefaultPageLimit
+	}
+	if raw > MaxPageLimit {
+		return MaxPageLimit
+	}
+	return raw
+}
+
+func logf(w io.Writer, format string, args ...any) {
+	if w == nil {
+		return
+	}
+	fmt.Fprintf(w, format, args...)
 }
 
 // parsePaginatedResponse extracts the response payload and pagination info.
