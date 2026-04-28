@@ -171,6 +171,17 @@ func (r *runtimeRunner) Run(ctx context.Context, invocation executor.Invocation)
 		return r.handleCatalogMiss(ctx, invocation, "product missing from discovery catalog and no supplement/env override")
 	}
 	if _, ok := product.FindTool(invocation.Tool); !ok {
+		// Catalog knows the product but not the tool — this happens when the
+		// catalog entry came from SupplementServers (endpoint-only, no tool
+		// list). Trust directRuntimeEndpoint to re-resolve a working endpoint
+		// for the tool. If that also misses, fall through to handleCatalogMiss
+		// so stderr still carries the explicit not-resolved signal.
+		if endpoint, ok := directRuntimeEndpoint(invocation.CanonicalProduct, invocation.Tool); ok {
+			if r.globalFlags != nil && r.globalFlags.DryRun {
+				invocation.DryRun = true
+			}
+			return r.executeInvocation(ctx, endpoint, invocation)
+		}
 		return r.handleCatalogMiss(ctx, invocation, fmt.Sprintf("tool %q not declared by product %q in discovery catalog", invocation.Tool, invocation.CanonicalProduct))
 	}
 	if r.globalFlags != nil && r.globalFlags.DryRun {
