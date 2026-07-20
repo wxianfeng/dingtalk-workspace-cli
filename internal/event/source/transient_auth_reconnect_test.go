@@ -24,14 +24,14 @@ func terminalRefreshError() error {
 	return &authpkg.HTTPStatusError{StatusCode: http.StatusUnauthorized}
 }
 
-func TestPersonalRetryLogErrorReportsOnlySafeTransientStatus(t *testing.T) {
+func TestCrossPlatformCoveragePersonalRetryLogErrorReportsOnlySafeTransientStatus(t *testing.T) {
 	err := retryPersonal(&accessTokenRefreshError{component: "personal source", cause: transientRefreshError()})
 	if got, want := personalRetryLogError(err), "personal source: token refresh HTTP 503"; got != want {
 		t.Fatalf("personalRetryLogError() = %q, want %q", got, want)
 	}
 }
 
-func TestPersonalSourceRetriesTransientTokenResolutionFailure(t *testing.T) {
+func TestCrossPlatformCoveragePersonalSourceRetriesTransientTokenResolutionFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var calls atomic.Int32
@@ -60,7 +60,7 @@ func TestPersonalSourceRetriesTransientTokenResolutionFailure(t *testing.T) {
 	}
 }
 
-func TestPersonalSourceDoesNotRetryTerminalTokenResolutionFailure(t *testing.T) {
+func TestCrossPlatformCoveragePersonalSourceDoesNotRetryTerminalTokenResolutionFailure(t *testing.T) {
 	var calls atomic.Int32
 	src, err := NewPersonal(PersonalConfig{
 		AccessTokenProvider: func(context.Context) (string, error) {
@@ -83,7 +83,7 @@ func TestPersonalSourceDoesNotRetryTerminalTokenResolutionFailure(t *testing.T) 
 	}
 }
 
-func TestPersonalSourceRetriesTransientRejectedTokenRefresh(t *testing.T) {
+func TestCrossPlatformCoveragePersonalSourceRetriesTransientRejectedTokenRefresh(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var ticketCalls atomic.Int32
@@ -124,7 +124,7 @@ func TestPersonalSourceRetriesTransientRejectedTokenRefresh(t *testing.T) {
 	}
 }
 
-func TestPortalSourceRetriesTransientTokenResolutionFailure(t *testing.T) {
+func TestCrossPlatformCoveragePortalSourceRetriesTransientTokenResolutionFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var calls atomic.Int32
@@ -152,7 +152,7 @@ func TestPortalSourceRetriesTransientTokenResolutionFailure(t *testing.T) {
 	}
 }
 
-func TestPortalSourceDoesNotRetryTerminalTokenResolutionFailure(t *testing.T) {
+func TestCrossPlatformCoveragePortalSourceDoesNotRetryTerminalTokenResolutionFailure(t *testing.T) {
 	var calls atomic.Int32
 	src, err := New(Config{PortalTicket: &PortalTicketConfig{
 		TicketURL: "https://ticket.invalid",
@@ -174,7 +174,7 @@ func TestPortalSourceDoesNotRetryTerminalTokenResolutionFailure(t *testing.T) {
 	}
 }
 
-func TestPortalSourceRetriesTransientRejectedTokenRefresh(t *testing.T) {
+func TestCrossPlatformCoveragePortalSourceRetriesTransientRejectedTokenRefresh(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var ticketCalls atomic.Int32

@@ -16,7 +16,7 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
 
-func TestClassifyRefreshFailureUsesStructuredSignals(t *testing.T) {
+func TestCrossPlatformCoverageClassifyRefreshFailureUsesStructuredSignals(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
@@ -41,7 +41,7 @@ func TestClassifyRefreshFailureUsesStructuredSignals(t *testing.T) {
 	}
 }
 
-func TestHTTPStatusErrorRetainsStatusThroughWrapping(t *testing.T) {
+func TestCrossPlatformCoverageHTTPStatusErrorRetainsStatusThroughWrapping(t *testing.T) {
 	want := &HTTPStatusError{StatusCode: http.StatusTooManyRequests}
 	err := errors.Join(errors.New("refresh failed"), want)
 	if got := ClassifyRefreshFailure(err); got != RefreshFailureTransient {
@@ -56,7 +56,7 @@ func TestHTTPStatusErrorRetainsStatusThroughWrapping(t *testing.T) {
 	}
 }
 
-func TestPostJSONClassifiesStatusWithoutLoggingResponseBody(t *testing.T) {
+func TestCrossPlatformCoveragePostJSONClassifiesStatusWithoutLoggingResponseBody(t *testing.T) {
 	const secretBody = `{"refreshToken":"must-not-reach-logs"}`
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -77,7 +77,7 @@ func TestPostJSONClassifiesStatusWithoutLoggingResponseBody(t *testing.T) {
 	}
 }
 
-func TestGetTokenSnapshotOnlyExpiresProfileForNonTransientRefreshFailures(t *testing.T) {
+func TestCrossPlatformCoverageGetTokenSnapshotOnlyExpiresProfileForNonTransientRefreshFailures(t *testing.T) {
 	oldLoad := oauthLoadToken
 	oldLoadLocked := oauthLoadTokenLocked
 	oldAcquire := oauthAcquireLock

@@ -22,7 +22,7 @@ import (
 	"testing"
 )
 
-func TestPortalTicket401RejectedTokenRefreshRetry(t *testing.T) {
+func TestCrossPlatformCoveragePortalTicket401RejectedTokenRefreshRetry(t *testing.T) {
 	var ticketCalls atomic.Int32
 	var forceRefreshCalls atomic.Int32
 	currentToken := "old-token"
