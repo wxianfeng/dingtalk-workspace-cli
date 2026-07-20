@@ -739,15 +739,24 @@ func newPersonalStreamSource(ctx context.Context, opts personalStreamSourceOptio
 		}
 		clientSecret = secret
 	}
+	configDir := opts.ConfigDir
+	tokenProvider := func(pctx context.Context) (string, error) {
+		return ResolveAuxiliaryAccessToken(pctx, configDir, "")
+	}
+	forceRefresh := func(pctx context.Context) (string, error) {
+		return ForceRefreshAccessToken(pctx, configDir)
+	}
 	_ = ctx
 	return source.NewPersonal(source.PersonalConfig{
-		AccessToken:  opts.Identity.AccessToken,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		SourceID:     opts.Identity.SourceID,
-		TicketURL:    ticketURL,
-		TicketMode:   mode,
-		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
+		AccessToken:         opts.Identity.AccessToken,
+		AccessTokenProvider: tokenProvider,
+		ForceRefreshToken:   forceRefresh,
+		ClientID:            clientID,
+		ClientSecret:        clientSecret,
+		SourceID:            opts.Identity.SourceID,
+		TicketURL:           ticketURL,
+		TicketMode:          mode,
+		HTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	})
 }
 

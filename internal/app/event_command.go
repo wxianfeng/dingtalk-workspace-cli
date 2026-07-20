@@ -394,8 +394,14 @@ func newEventSource(ctx context.Context, configDir, clientID, clientSecret strin
 		ClientID:     portalClientID,
 		ClientSecret: portalClientSecret,
 		PortalTicket: &source.PortalTicketConfig{
-			TicketURL:    eventStreamTicketURL(streamOpts.TicketURL),
-			AccessToken:  token,
+			TicketURL:   eventStreamTicketURL(streamOpts.TicketURL),
+			AccessToken: token,
+			AccessTokenProvider: func(pctx context.Context) (string, error) {
+				return ResolveAuxiliaryAccessToken(pctx, configDir, "")
+			},
+			ForceRefreshToken: func(pctx context.Context) (string, error) {
+				return ForceRefreshAccessToken(pctx, configDir)
+			},
 			SourceID:     eventStreamSourceID(streamOpts.SourceID),
 			Mode:         streamOpts.Mode,
 			ClientID:     portalClientID,

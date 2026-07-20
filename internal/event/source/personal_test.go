@@ -611,6 +611,212 @@ func TestPersonalSourceParsedHeadersPassNormalBusFilter(t *testing.T) {
 	}
 }
 
+func TestPersonalSourceFetchTicketUsesProvider(t *testing.T) {
+	var wsEndpoint string
+	var gotToken string
+	upgrader := websocket.Upgrader{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ticket", func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("x-user-access-token")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"endpoint": wsEndpoint,
+				"ticket":   "ticket-prov",
+			},
+		})
+	})
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteJSON(personalTestDataFrame(1))
+		var ack payload.DataFrameResponse
+		_ = conn.ReadJSON(&ack)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	wsEndpoint = "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	src, err := NewPersonal(PersonalConfig{
+		AccessToken:         "static-token",
+		AccessTokenProvider: func(context.Context) (string, error) { return "provider-token", nil },
+		ClientID:            "client-1",
+		SourceID:            "open",
+		TicketURL:           srv.URL + "/ticket",
+		HTTPClient:          srv.Client(),
+		ReconnectMin:        10 * time.Millisecond,
+		ReconnectMax:        20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewPersonal() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	evCh := make(chan *dwsevent.RawEvent, 1)
+	done := make(chan error, 1)
+	go func() { done <- src.Start(ctx, func(ev *dwsevent.RawEvent) { evCh <- ev }) }()
+
+	select {
+	case <-evCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+	if gotToken != "provider-token" {
+		t.Fatalf("ticket request used token %q, want %q", gotToken, "provider-token")
+	}
+	cancel()
+	<-done
+}
+
+func TestPersonalSourceTicket401TriggersForceRefreshAndRetries(t *testing.T) {
+	var wsEndpoint string
+	var ticketCalls atomic.Int32
+	var forceRefreshCalls atomic.Int32
+	var tokenMu sync.Mutex
+	currentToken := "old-token"
+
+	upgrader := websocket.Upgrader{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ticket", func(w http.ResponseWriter, r *http.Request) {
+		call := int(ticketCalls.Add(1))
+		if call == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		// Second call: verify it uses the new token
+		if got := r.Header.Get("x-user-access-token"); got != "new-token" {
+			t.Errorf("second ticket request token = %q, want %q", got, "new-token")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"result": map[string]any{
+				"endpoint": wsEndpoint,
+				"ticket":   "ticket-refreshed",
+			},
+		})
+	})
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteJSON(personalTestDataFrame(1))
+		var ack payload.DataFrameResponse
+		_ = conn.ReadJSON(&ack)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	wsEndpoint = "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	src, err := NewPersonal(PersonalConfig{
+		AccessToken: "static-fallback",
+		AccessTokenProvider: func(context.Context) (string, error) {
+			tokenMu.Lock()
+			defer tokenMu.Unlock()
+			return currentToken, nil
+		},
+		ForceRefreshToken: func(context.Context) (string, error) {
+			forceRefreshCalls.Add(1)
+			tokenMu.Lock()
+			currentToken = "new-token"
+			tokenMu.Unlock()
+			return "new-token", nil
+		},
+		ClientID:     "client-1",
+		SourceID:     "open",
+		TicketURL:    srv.URL + "/ticket",
+		HTTPClient:   srv.Client(),
+		ReconnectMin: 10 * time.Millisecond,
+		ReconnectMax: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewPersonal() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	evCh := make(chan *dwsevent.RawEvent, 1)
+	done := make(chan error, 1)
+	go func() { done <- src.Start(ctx, func(ev *dwsevent.RawEvent) { evCh <- ev }) }()
+
+	select {
+	case <-evCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for event after 401 recovery")
+	}
+	if got := forceRefreshCalls.Load(); got != 1 {
+		t.Fatalf("ForceRefreshToken called %d times, want 1", got)
+	}
+	if got := ticketCalls.Load(); got != 2 {
+		t.Fatalf("ticket calls = %d, want 2", got)
+	}
+	cancel()
+	<-done
+}
+
+func TestPersonalSourceTicket401WithoutCallbackIsFatal(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	src, err := NewPersonal(PersonalConfig{
+		AccessToken:  "token",
+		ClientID:     "client",
+		SourceID:     "open",
+		TicketURL:    srv.URL,
+		HTTPClient:   srv.Client(),
+		ReconnectMin: time.Millisecond,
+		ReconnectMax: 2 * time.Millisecond,
+		// ForceRefreshToken intentionally nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = src.Start(context.Background(), func(*dwsevent.RawEvent) {})
+	if err == nil {
+		t.Fatal("Start() error = nil, want fatal 401 error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("ticket calls = %d, want 1 (no retry)", got)
+	}
+}
+
+func TestPersonalSourceTicket401ForceRefreshFailsIsFatal(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	src, err := NewPersonal(PersonalConfig{
+		AccessToken: "token",
+		ForceRefreshToken: func(context.Context) (string, error) {
+			return "", errors.New("refresh failed")
+		},
+		ClientID:     "client",
+		SourceID:     "open",
+		TicketURL:    srv.URL,
+		HTTPClient:   srv.Client(),
+		ReconnectMin: time.Millisecond,
+		ReconnectMax: 2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = src.Start(context.Background(), func(*dwsevent.RawEvent) {})
+	if err == nil {
+		t.Fatal("Start() error = nil, want fatal 401 error when refresh fails")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("ticket calls = %d, want 1 (no retry)", got)
+	}
+}
+
 func personalSourceForRawEventTests() *PersonalSource {
 	return &PersonalSource{cfg: PersonalConfig{
 		SourceID: "fallback_source",

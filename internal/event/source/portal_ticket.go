@@ -39,14 +39,16 @@ const (
 // normal mode uses portal-side managed credentials; custom mode asks portal to
 // open the user connection with the caller-provided clientId/clientSecret.
 type PortalTicketConfig struct {
-	TicketURL    string
-	AccessToken  string
-	SourceID     string
-	Mode         string
-	ClientID     string
-	ClientSecret string
-	UserAgent    string
-	HTTPClient   *http.Client
+	TicketURL           string
+	AccessToken         string
+	AccessTokenProvider func(context.Context) (string, error) // optional: 优先于 AccessToken
+	ForceRefreshToken   func(context.Context) (string, error) // optional: 401 时调用
+	SourceID            string
+	Mode                string
+	ClientID            string
+	ClientSecret        string
+	UserAgent           string
+	HTTPClient          *http.Client
 }
 
 func (c *PortalTicketConfig) Valid() error {
@@ -56,7 +58,7 @@ func (c *PortalTicketConfig) Valid() error {
 	if strings.TrimSpace(c.TicketURL) == "" {
 		return errors.New("source: portal ticket URL is required")
 	}
-	if strings.TrimSpace(c.AccessToken) == "" {
+	if strings.TrimSpace(c.AccessToken) == "" && c.AccessTokenProvider == nil {
 		return errors.New("source: portal access token is required")
 	}
 	if strings.TrimSpace(c.SourceID) == "" {
@@ -193,7 +195,14 @@ func requestPortalTicket(ctx context.Context, cfg *PortalTicketConfig) (portalSt
 	if ua := strings.TrimSpace(cfg.UserAgent); ua != "" {
 		req.Header.Set("User-Agent", ua)
 	}
-	req.Header.Set("x-user-access-token", cfg.AccessToken)
+	accessToken := cfg.AccessToken
+	if cfg.AccessTokenProvider != nil {
+		if tok, err := cfg.AccessTokenProvider(ctx); err == nil && tok != "" {
+			accessToken = tok
+		}
+		// provider 出错时 fallback 到 string 字段
+	}
+	req.Header.Set("x-user-access-token", accessToken)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -202,8 +211,15 @@ func requestPortalTicket(ctx context.Context, cfg *PortalTicketConfig) (portalSt
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return portalStreamTicket{}, fmt.Errorf("source: portal ticket HTTP %d: %s",
+		err := fmt.Errorf("source: portal ticket HTTP %d: %s",
 			resp.StatusCode, truncatePortalTicketLog(string(raw), 300))
+		if resp.StatusCode == http.StatusUnauthorized && cfg.ForceRefreshToken != nil {
+			if _, refreshErr := cfg.ForceRefreshToken(ctx); refreshErr == nil {
+				return portalStreamTicket{}, err // 刷新成功，返回错误让外层重试
+			}
+			// 刷新失败，401 仍为致命错误
+		}
+		return portalStreamTicket{}, err
 	}
 
 	var direct portalStreamTicket

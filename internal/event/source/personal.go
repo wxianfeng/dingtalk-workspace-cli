@@ -41,9 +41,11 @@ const (
 )
 
 type PersonalConfig struct {
-	AccessToken     string
-	ClientID        string
-	ClientSecret    string
+	AccessToken         string
+	AccessTokenProvider func(context.Context) (string, error) // optional: 优先于 AccessToken
+	ForceRefreshToken   func(context.Context) (string, error) // optional: 401 时调用
+	ClientID            string
+	ClientSecret        string
 	SourceID        string
 	TicketURL       string
 	TicketMode      string
@@ -73,7 +75,7 @@ type ticketResponse struct {
 }
 
 func NewPersonal(cfg PersonalConfig) (*PersonalSource, error) {
-	if strings.TrimSpace(cfg.AccessToken) == "" {
+	if strings.TrimSpace(cfg.AccessToken) == "" && cfg.AccessTokenProvider == nil {
 		return nil, errors.New("personal source: AccessToken is required")
 	}
 	if strings.TrimSpace(cfg.ClientID) == "" {
@@ -213,8 +215,15 @@ func (s *PersonalSource) fetchTicket(ctx context.Context) (*ticketResponse, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-user-access-token", s.cfg.AccessToken)
-	req.Header.Set("Authorization", "Bearer "+s.cfg.AccessToken)
+	accessToken := s.cfg.AccessToken
+	if s.cfg.AccessTokenProvider != nil {
+		if tok, err := s.cfg.AccessTokenProvider(ctx); err == nil && tok != "" {
+			accessToken = tok
+		}
+		// provider 出错时 fallback 到 string 字段
+	}
+	req.Header.Set("x-user-access-token", accessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("X-DWS-Client-Id", s.cfg.ClientID)
 	req.Header.Set("X-DWS-Source-Id", s.cfg.SourceID)
 
@@ -229,6 +238,12 @@ func (s *PersonalSource) fetchTicket(ctx context.Context) (*ticketResponse, erro
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("personal source: ticket HTTP %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusUnauthorized && s.cfg.ForceRefreshToken != nil {
+			if _, refreshErr := s.cfg.ForceRefreshToken(ctx); refreshErr == nil {
+				return nil, retryPersonal(err) // 刷新成功，标记可重试
+			}
+			// 刷新失败，401 仍为致命错误
+		}
 		if retryableTicketStatus(resp.StatusCode) {
 			return nil, retryPersonal(err)
 		}
