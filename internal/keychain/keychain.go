@@ -17,7 +17,10 @@
 // - Windows: DPAPI + Registry storage
 package keychain
 
-import "errors"
+import (
+	"errors"
+	"os"
+)
 
 const (
 	// Service is the unified keychain service name for all secrets.
@@ -33,6 +36,11 @@ const (
 	// parallel. When empty, the platform default applies.
 	StorageDirEnv = "DWS_KEYCHAIN_DIR"
 
+	// TestNamespaceEnv isolates the Windows HKCU registry backend for tests.
+	// Production code must not set it. Other platforms already isolate secure
+	// storage through StorageDirEnv and ignore this value.
+	TestNamespaceEnv = "DWS_KEYCHAIN_TEST_NAMESPACE"
+
 	// DisableKeychainEnv opts the macOS implementation out of system
 	// Keychain access for the DEK, falling back to a file-based DEK
 	// (same scheme as Linux). Intended for sandboxed runtimes where
@@ -40,6 +48,15 @@ const (
 	// at-rest protection — DEK and ciphertext live in the same
 	// directory — and is therefore opt-in.
 	DisableKeychainEnv = "DWS_DISABLE_KEYCHAIN"
+)
+
+// These filesystem hooks are shared by the platform implementations and the
+// platform-neutral legacy migration path.
+var (
+	keychainReadFile = os.ReadFile
+	keychainRename   = os.Rename
+	keychainRemove   = os.Remove
+	keychainStat     = os.Stat
 )
 
 var (
@@ -145,6 +162,20 @@ func Remove(service, account string) error {
 // dryRun is true, all selected entries are validated without modifying data.
 func MigrateToFileDEK(service string, dryRun bool) (int, error) {
 	return platformMigrateToFileDEK(service, dryRun)
+}
+
+// ValidateAuthTokenEntries verifies every persisted auth-token ciphertext,
+// including profile slots not yet registered in profiles.json, without
+// creating or rotating key material.
+func ValidateAuthTokenEntries(service string) error {
+	return platformValidateAuthTokenEntries(service)
+}
+
+// RemoveAuthTokenEntries deletes the legacy token plus every organization and
+// identity scoped auth-token entry for service. Other keychain accounts are
+// preserved.
+func RemoveAuthTokenEntries(service string) error {
+	return platformRemoveAuthTokenEntries(service)
 }
 
 // Exists checks if an entry exists in the keychain.

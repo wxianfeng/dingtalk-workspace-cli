@@ -147,8 +147,8 @@ _Group chats, conversations, messages, and robot/webhook integrations._
 | `dws chat group members remove` | Remove one or more members from a group chat. | When the agent kicks users who should no longer have access to the group. |
 | `dws chat group rename` | Update the display name of a group chat. | When the agent is rebranding or clarifying the purpose of an existing group. |
 | `dws chat list-top-conversations` | Fetch the list of conversations the current user has pinned to the top of their chat list. | When the agent needs to prioritize the user's most important conversations in a summary or dashboard. |
-| `dws chat message list` | Pull the recent message history of a specific conversation (v2), paginated. | When the agent needs to read what has recently been said in a conversation to summarize or reason about it. |
-| `dws chat message list-all` | Search all messages across the current user's conversations within a time range. | When the agent needs to audit or summarize everything the user saw across chats in a window. |
+| `dws chat message list` | Pull the recent message history of a specific conversation, including quoted-message context for merged forwards and images. | When the agent needs to read what has recently been said in a conversation and retain the context of replies. |
+| `dws chat message list-all` | Search all messages across the current user's conversations within a time range, surfacing any search-entitlement guidance. | When the agent needs to audit or summarize everything the user saw across chats in a window. |
 | `dws chat message list-by-sender` | Fetch messages authored by a specific sender across both single and group chats. | When the agent needs to pull everything a particular colleague said recently. |
 | `dws chat message list-focused` | Fetch messages from users the current user has marked as "special focus" (starred contacts). | When the agent builds a priority-inbox view highlighting messages from important people. |
 | `dws chat message list-mentions` | Fetch messages where the current user was @-mentioned. | When the agent wants to surface items that explicitly require the user's attention. |
@@ -164,16 +164,19 @@ _Group chats, conversations, messages, and robot/webhook integrations._
 
 ## `dws contact` — Contact Directory
 
-_Users, departments, and directory lookups._
+_Users, departments, directory lookups, and enterprise onboarding._
 
-**6 commands**
+**9 commands**
 
 | Command | Description | When to use |
 |---|---|---|
+| `dws contact account create` | Create a dedicated login account in the current enterprise. | When the user explicitly asks for an enterprise account or login account, rather than a new enterprise organization. |
 | `dws contact dept list-members` | List members of a specific department by department ID. | When the agent needs the roster of a department to target communication or build a team overview. |
 | `dws contact dept search` | Search departments in the organization's contact directory by keyword. | When the agent needs to resolve a department name to a department ID. |
+| `dws contact org create` | Create a new DingTalk enterprise organization. | When the user explicitly asks to create or initialize an enterprise and provides its name and creator display name. |
 | `dws contact user get` | Batch-fetch detailed profile information for one or more users by user ID. | When the agent needs names, titles, emails, or departments for a known set of user IDs. |
 | `dws contact user get-self` | Retrieve the profile of the currently authenticated user. | When the agent needs to identify who it is acting on behalf of (user ID, name, org). |
+| `dws contact user invite` | Invite one employee by mobile number into the current enterprise. | When the user explicitly asks to add an employee and has supplied the employee name and mobile number. |
 | `dws contact user search` | Search users in the contact directory by keyword (name, title, etc.). | When the agent needs to resolve a person's display name to a user ID. |
 | `dws contact user search-mobile` | Look up a user by mobile phone number. | When the agent has only a phone number and needs to find the corresponding DingTalk user. |
 

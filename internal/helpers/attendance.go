@@ -475,10 +475,7 @@ func collectGlobalSettingSaveRequest(cmd *cobra.Command, settingScene string) (m
 			continue
 		}
 
-		value, err := readGlobalSettingSaveFlagValue(cmd, spec)
-		if err != nil {
-			return nil, err
-		}
+		value, _ := readGlobalSettingSaveFlagValue(cmd, spec)
 		request[spec.requestField] = value
 		validSceneFieldCount++
 	}
@@ -1122,8 +1119,8 @@ checkTime 字段统一使用 "HH:mm" 格式（如 "09:00"），CLI 自动转换�
 		Short: "查询当前用户可管理的补卡规则列表",
 		Long: `根据用户权限查询补卡规则列表，入参封装在 ATRuleQueryParam 对象中。
   --query  补卡规则名称关键字，模糊搜索（可选）
-  --page   页码（从 1 开始，默认 1）（必填）
-  --limit  每页条数（200 以内，默认 20）（必填）`,
+  --page   页码（从 1 开始，默认 1）（可选）
+  --limit  每页条数（200 以内，默认 20）（可选）`,
 		Example: `  dws attendance adjustment search --page 1 --limit 20
   dws attendance adjustment search --query "标准" --page 1 --limit 50`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1175,8 +1172,8 @@ checkTime 字段统一使用 "HH:mm" 格式（如 "09:00"），CLI 自动转换�
 		Short: "查询当前用户可管理的加班规则列表",
 		Long: `根据用户权限查询加班规则列表，入参封装在 ATRuleQueryParam 对象中。
   --query  加班规则名称关键字，模糊搜索（可选）
-  --page   页码（从 1 开始，默认 1）（必填）
-  --limit  每页条数（200 以内，默认 20）（必填）`,
+  --page   页码（从 1 开始，默认 1）（可选）
+  --limit  每页条数（200 以内，默认 20）（可选）`,
 		Example: `  dws attendance overtime search --page 1 --limit 20
   dws attendance overtime search --query "节假日" --page 1 --limit 50`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1209,7 +1206,7 @@ checkTime 字段统一使用 "HH:mm" 格式（如 "09:00"），CLI 自动转换�
 		Use:   "search",
 		Short: "查询当前用户可管理的考勤组列表",
 		Long: `根据当前用户的权限和筛选条件获取考勤组简要信息。
-入参 ATGroupSearchParam 对象（至少填写一个子字段）和 PageQuery 对象（两个子字段必填）均不能为空。
+CLI 会在未传筛选条件时补齐默认查询字段，在未传分页参数时补齐 page=1、limit=20，以满足服务端非空对象约束。
   --query           考勤组名称关键字，模糊搜索
   --type            考勤组类型：FIXED（固定班制）/ TURN（排班制）/ NONE（自由工时）
   --query-position  是否查询地理定位和 Wifi 名称（默认 false）
@@ -1557,14 +1554,6 @@ checkTime 字段统一使用 "HH:mm" 格式（如 "09:00"），CLI 自动转换�
 			if cmd.Flags().Changed("owner") {
 				v, _ := cmd.Flags().GetString("owner")
 				groupVO["owner"] = v
-			}
-
-			// 确保必填字段已填入 groupVO
-			if groupVO["name"] == nil || groupVO["name"] == "" {
-				return fmt.Errorf("考勤组名称(name)是必填项")
-			}
-			if groupVO["type"] == nil || groupVO["type"] == "" {
-				return fmt.Errorf("考勤组类型(type)是必填项")
 			}
 
 			// type=FIXED 时校验条件必填字段
@@ -2998,9 +2987,9 @@ statsType 统计类型支持：week（周统计）、month（月统计）。`,
 	// adjustment-rule search (get_adjustment_rule)
 	attendanceAdjustmentSearchCmd.Flags().String("query", "", "补卡规则名称关键字，模糊搜索（可选）")
 	attendanceAdjustmentSearchCmd.Flags().String("name", "", "补卡规则名称关键字（--query 的别名）")
-	attendanceAdjustmentSearchCmd.Flags().Int("page", 1, "页码，从 1 开始（必填）")
+	attendanceAdjustmentSearchCmd.Flags().Int("page", 1, "页码，从 1 开始（默认 1，可选）")
 	attendanceAdjustmentSearchCmd.Flags().Int("current-page", 0, "页码（--page 的别名）")
-	attendanceAdjustmentSearchCmd.Flags().Int("limit", 20, "每页条数，200 以内（必填）")
+	attendanceAdjustmentSearchCmd.Flags().Int("limit", 20, "每页条数，200 以内（默认 20，可选）")
 	attendanceAdjustmentSearchCmd.Flags().Int("size", 0, "每页条数（--limit 的别名）")
 	_ = attendanceAdjustmentSearchCmd.Flags().MarkHidden("name")
 	_ = attendanceAdjustmentSearchCmd.Flags().MarkHidden("current-page")
@@ -3014,9 +3003,9 @@ statsType 统计类型支持：week（周统计）、month（月统计）。`,
 	// overtime-rule search (get_overtime_rule)
 	attendanceOvertimeSearchCmd.Flags().String("query", "", "加班规则名称关键字，模糊搜索（可选）")
 	attendanceOvertimeSearchCmd.Flags().String("name", "", "加班规则名称关键字（--query 的别名）")
-	attendanceOvertimeSearchCmd.Flags().Int("page", 1, "页码，从 1 开始（必填）")
+	attendanceOvertimeSearchCmd.Flags().Int("page", 1, "页码，从 1 开始（默认 1，可选）")
 	attendanceOvertimeSearchCmd.Flags().Int("current-page", 0, "页码（--page 的别名）")
-	attendanceOvertimeSearchCmd.Flags().Int("limit", 20, "每页条数，200 以内（必填）")
+	attendanceOvertimeSearchCmd.Flags().Int("limit", 20, "每页条数，200 以内（默认 20，可选）")
 	attendanceOvertimeSearchCmd.Flags().Int("size", 0, "每页条数（--limit 的别名）")
 	_ = attendanceOvertimeSearchCmd.Flags().MarkHidden("name")
 	_ = attendanceOvertimeSearchCmd.Flags().MarkHidden("current-page")
@@ -3029,9 +3018,9 @@ statsType 统计类型支持：week（周统计）、month（月统计）。`,
 	attendanceGroupSearchCmd.Flags().String("type", "", "考勤组类型：FIXED 固定班制 / TURN 排班制 / NONE 自由工时（可选）")
 	attendanceGroupSearchCmd.Flags().Bool("query-position", false, "是否查询地理定位和 Wifi 名称（可选）")
 	attendanceGroupSearchCmd.Flags().Bool("query-ble", false, "是否查询蓝牙设备列表（可选）")
-	attendanceGroupSearchCmd.Flags().Int("page", 1, "页码，从 1 开始（必填）")
+	attendanceGroupSearchCmd.Flags().Int("page", 1, "页码，从 1 开始（默认 1，可选）")
 	attendanceGroupSearchCmd.Flags().Int("page-index", 0, "页码（--page 的别名）")
-	attendanceGroupSearchCmd.Flags().Int("limit", 20, "每页条数，200 以内（必填）")
+	attendanceGroupSearchCmd.Flags().Int("limit", 20, "每页条数，200 以内（默认 20，可选）")
 	attendanceGroupSearchCmd.Flags().Int("size", 0, "每页条数（--limit 的别名）")
 	_ = attendanceGroupSearchCmd.Flags().MarkHidden("name")
 	_ = attendanceGroupSearchCmd.Flags().MarkHidden("page-index")
@@ -3089,7 +3078,9 @@ statsType 统计类型支持：week（周统计）、month（月统计）。`,
 	attendanceSummaryCmd.Flags().String("user", "", "钉钉用户 ID（必填）")
 	attendanceSummaryCmd.Flags().String("date", "", "查询日期，格式 YYYY-MM-DD 或 YYYY-MM-DD HH:mm:ss（必填）")
 	attendanceSummaryCmd.Flags().String("stats-type", "", "统计类型：week（周统计）/ month（月统计）（必填）")
-	attendanceSummaryCmd.Flags().String("tag-name", "", "标签名称（可选）")
+	attendanceSummaryCmd.Flags().String("tag-name", "", "旧版兼容参数（已废弃，不参与考勤摘要查询）")
+	_ = attendanceSummaryCmd.Flags().MarkDeprecated("tag-name", "--tag-name 不再参与 attendance summary 查询，请移除该参数")
+	_ = attendanceSummaryCmd.Flags().MarkHidden("tag-name")
 
 	// rules (query_attendance_group_or_rules)
 	attendanceRulesCmd.Flags().String("date", "", "考勤日期，格式 YYYY-MM-DD 或 yyyy-MM-dd HH:mm:ss (必填)")

@@ -37,6 +37,8 @@ const (
 	subscriptionListMaxPageGuard = 10000
 )
 
+var subscriptionListMaxPages = subscriptionListMaxPageGuard
+
 type Identity struct {
 	AccessToken  string `json:"-"`
 	LocalSubject string `json:"-"`
@@ -61,9 +63,10 @@ func (i Identity) Key() string {
 }
 
 type Client struct {
-	BaseURL    string
-	HTTPClient *http.Client
-	Identity   Identity
+	BaseURL             string
+	HTTPClient          *http.Client
+	Identity            Identity
+	AccessTokenProvider func(context.Context) (string, error)
 }
 
 type CreateSubscriptionRequest struct {
@@ -230,7 +233,7 @@ func (c *Client) ListSubscriptions(ctx context.Context, opts ListOptions) ([]Sub
 	q.Set("pageSize", fmt.Sprintf("%d", subscriptionListPageSize))
 	all := make([]Subscription, 0, subscriptionListPageSize)
 	seen := make(map[string]struct{}, subscriptionListPageSize)
-	for pageNo := 1; pageNo <= subscriptionListMaxPageGuard; pageNo++ {
+	for pageNo := 1; pageNo <= subscriptionListMaxPages; pageNo++ {
 		q.Set("pageNo", fmt.Sprintf("%d", pageNo))
 		var result dwsSubListResult
 		if err := c.do(ctx, http.MethodGet, "/event/sublist", q, nil, &result); err != nil {
@@ -265,8 +268,8 @@ func (c *Client) ListSubscriptions(ctx context.Context, opts ListOptions) ([]Sub
 		if len(result.Items) < effectivePageSize {
 			break
 		}
-		if pageNo == subscriptionListMaxPageGuard {
-			return nil, fmt.Errorf("personal event: subscription pagination exceeded %d pages", subscriptionListMaxPageGuard)
+		if pageNo == subscriptionListMaxPages {
+			return nil, fmt.Errorf("personal event: subscription pagination exceeded %d pages", subscriptionListMaxPages)
 		}
 	}
 
@@ -335,8 +338,9 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	if c == nil {
 		return errors.New("personal event: nil client")
 	}
-	if c.Identity.AccessToken == "" {
-		return errors.New("personal event: access token is required")
+	accessToken, err := c.resolveAccessToken(ctx)
+	if err != nil {
+		return err
 	}
 	u := strings.TrimRight(c.BaseURL, "/") + path
 	if len(q) > 0 {
@@ -356,7 +360,7 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	if err != nil {
 		return fmt.Errorf("personal event: create request: %w", err)
 	}
-	c.decorate(req)
+	c.decorate(req, accessToken)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -422,9 +426,26 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	return json.Unmarshal(data, out)
 }
 
-func (c *Client) decorate(req *http.Request) {
-	req.Header.Set("Authorization", "Bearer "+c.Identity.AccessToken)
-	req.Header.Set("x-user-access-token", c.Identity.AccessToken)
+func (c *Client) resolveAccessToken(ctx context.Context) (string, error) {
+	if c.AccessTokenProvider != nil {
+		token, err := c.AccessTokenProvider(ctx)
+		if err != nil {
+			return "", fmt.Errorf("personal event: resolve access token: %w", err)
+		}
+		if token = strings.TrimSpace(token); token != "" {
+			return token, nil
+		}
+		return "", errors.New("personal event: access token provider returned empty token")
+	}
+	if token := strings.TrimSpace(c.Identity.AccessToken); token != "" {
+		return token, nil
+	}
+	return "", errors.New("personal event: access token is required")
+}
+
+func (c *Client) decorate(req *http.Request, accessToken string) {
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("x-user-access-token", accessToken)
 	req.Header.Set("X-DWS-Client-Id", c.Identity.ClientID)
 	req.Header.Set("X-DWS-Source-Id", c.Identity.SourceID)
 	if c.Identity.CorpID != "" {
@@ -462,35 +483,29 @@ func decodeResult(raw json.RawMessage, out any) error {
 		return nil
 	}
 	if sub, ok := out.(*Subscription); ok {
-		if decoded, ok, err := decodeSubscriptionResult(raw); ok || err != nil {
-			if err != nil {
-				return err
-			}
+		if decoded, ok := decodeSubscriptionResult(raw); ok {
 			*sub = decoded
 			return nil
 		}
 	}
-	if err := json.Unmarshal(raw, out); err == nil {
-		return nil
-	}
 	return json.Unmarshal(raw, out)
 }
 
-func decodeSubscriptionResult(raw json.RawMessage) (Subscription, bool, error) {
+func decodeSubscriptionResult(raw json.RawMessage) (Subscription, bool) {
 	var ids []string
 	if err := json.Unmarshal(raw, &ids); err == nil {
 		if len(ids) == 0 {
-			return Subscription{}, true, nil
+			return Subscription{}, true
 		}
-		return Subscription{SubscribeID: ids[0]}, true, nil
+		return Subscription{SubscribeID: ids[0]}, true
 	}
 	var item dwsSubscription
 	if err := json.Unmarshal(raw, &item); err == nil &&
 		(firstNonEmpty(item.SubID, item.SubscribeID) != "" ||
 			firstNonEmpty(item.EventKey, item.EventKeySnake) != "") {
-		return item.toSubscription(), true, nil
+		return item.toSubscription(), true
 	}
-	return Subscription{}, false, nil
+	return Subscription{}, false
 }
 
 func decodeAPIError(data []byte) *APIError {
@@ -571,9 +586,8 @@ func sanitizeLogPayload(data []byte) string {
 	var parsed any
 	if err := json.Unmarshal(data, &parsed); err == nil {
 		redacted := redactJSONValue(parsed)
-		if s, err := marshalLogJSON(redacted); err == nil {
-			return truncateLogPayload(s)
-		}
+		s, _ := marshalLogJSON(redacted) // JSON-decoded values are always encodable.
+		return truncateLogPayload(s)
 	}
 	return truncateLogPayload(string(data))
 }

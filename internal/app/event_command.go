@@ -30,6 +30,8 @@ import (
 	"time"
 
 	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cli"
+	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	dwsevent "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/bus"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/busctl"
@@ -40,6 +42,31 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
+)
+
+var (
+	eventRunPersonalConsume    = runPersonalEventConsume
+	eventRunPersonalList       = runPersonalEventList
+	eventRunPersonalStatus     = runPersonalEventStatus
+	eventRunPersonalStop       = runPersonalEventStop
+	eventNormalizeAs           = normalizeEventAs
+	eventResolveCredentials    = resolveEventCredentials
+	eventConsumeRun            = consume.Run
+	eventRunForeground         = runForegroundBus
+	eventNewEventSource        = newEventSource
+	eventNewDingtalkSource     = source.New
+	eventResolveAccessToken    = ResolveAuxiliaryAccessToken
+	eventBusRun                = bus.Run
+	eventReadyFDFromEnv        = busctl.ReadyFDFromEnv
+	eventResolvePersonal       = resolvePersonalEventIdentity
+	eventNewPersonalSource     = newPersonalStreamSource
+	eventMkdirAll              = os.MkdirAll
+	eventOpenFile              = os.OpenFile
+	eventEnumerateBuses        = busctl.EnumerateBuses
+	eventFindBus               = busctl.FindBusByClientID
+	eventQueryEntry            = busctl.QueryEntry
+	eventStopBus               = busctl.Stop
+	eventResolveAppCredentials = authpkg.ResolveAppCredentialsStrict
 )
 
 // newEventCommand returns the `event` parent command and all its subcommands.
@@ -101,13 +128,16 @@ func newEventConsumeCommand() *cobra.Command {
   raw             仅 SDK 原始 payload，无外层封装
   compact         扁平化 + 解析嵌套 + 抽取语义字段（Agent 友好）
 
-默认使用当前 OAuth 登录态自动创建/复用个人订阅并建立个人长连接。
+默认使用当前 OAuth 登录态自动创建/复用个人订阅并建立个人长连接；非默认组织加
+--profile。连上后 stderr 打就绪行 [event] ready，等它出现再读 stdout；停机用
+SIGTERM、关 stdin，或先用 dws event stop <subscribe_id> --dry-run 预览、确认后加
+--yes，绝不要 kill -9。
 --event-types/--filter 只影响本地 bus → consume 这一段投递；普通个人事件消费
 通常不需要设置。`,
 		Args:              cobra.MaximumNArgs(1),
 		DisableAutoGenTag: true,
 		RunE: func(c *cobra.Command, args []string) error {
-			as, err := normalizeEventAs(asIdentity)
+			as, err := eventNormalizeAs(asIdentity)
 			if err != nil {
 				return err
 			}
@@ -130,7 +160,7 @@ func newEventConsumeCommand() *cobra.Command {
 				personalOpts.StreamTicketMode = streamOpts.Mode
 				personalOpts.StreamTicketURL = streamOpts.TicketURL
 				personalOpts.StreamSourceID = streamOpts.SourceID
-				return runPersonalEventConsume(c, personalOpts)
+				return eventRunPersonalConsume(c, personalOpts)
 			}
 			if personalOpts.DebugRawEvents {
 				return fmt.Errorf("event consume: --debug-raw-events is only supported with --as user")
@@ -144,6 +174,7 @@ func newEventConsumeCommand() *cobra.Command {
 				"ttl",
 				"ephemeral",
 				"user",
+				"open-dingtalk-id",
 				"group",
 				"personal-event-base-url",
 			); err != nil {
@@ -159,7 +190,7 @@ func newEventConsumeCommand() *cobra.Command {
 			// Portal ticket normal mode uses portal-managed app credentials, so
 			// local ClientSecret is intentionally not required there.
 			configDir := defaultConfigDir()
-			clientID, clientSecret, err := resolveEventCredentials(configDir, streamOpts)
+			clientID, clientSecret, err := eventResolveCredentials(configDir, streamOpts)
 			if err != nil {
 				return fmt.Errorf("event consume: %w", err)
 			}
@@ -214,6 +245,9 @@ func newEventConsumeCommand() *cobra.Command {
 				DryRun:         dryRun,
 				SpawnExtraArgs: streamOpts.spawnArgs(),
 			}
+			// Arm the stdin-EOF shutdown watcher only for a pipe-style,
+			// unbounded run (see shouldWatchStdinEOF).
+			applyEventConsumeStdin(&cfg, maxEvents, duration, c.InOrStdin())
 
 			// Step 5: validation (flag-only rules).
 			if err := consume.ValidateConfig(cfg); err != nil {
@@ -229,9 +263,9 @@ func newEventConsumeCommand() *cobra.Command {
 			// Step 6: foreground mode runs the bus in-process. Otherwise
 			// consume.Run discovers / forks the bus and dials it.
 			if foreground {
-				return runForegroundBus(ctx, cfg, configDir, clientSecret, streamOpts)
+				return eventRunForeground(ctx, cfg, configDir, clientSecret, streamOpts)
 			}
-			return consume.Run(ctx, cfg)
+			return eventConsumeRun(ctx, cfg)
 		},
 	}
 
@@ -260,7 +294,7 @@ func newEventConsumeCommand() *cobra.Command {
 	f.BoolVar(&dryRun, "dry-run", false,
 		"仅打印解析后的配置，不连接 bus / 云端")
 	f.BoolVar(&foreground, "foreground", false,
-		"不 fork daemon，当前进程跑 bus (systemd/k8s/launchd 友好)")
+		"当前进程直接跑 bus 服务、不 fork、不打印事件（给 systemd/k8s 托管用）；读事件不要用它")
 	f.StringVar(&personalOpts.SubscribeID, "subscribe-id", "",
 		"个人事件订阅 ID；传入后复用已有订阅")
 	f.StringVar(&personalOpts.Rule, "rule", "",
@@ -274,9 +308,14 @@ func newEventConsumeCommand() *cobra.Command {
 	f.DurationVar(&personalOpts.TTL, "ttl", 0,
 		"个人订阅 TTL (Go duration，如 24h；0 表示不过期)")
 	f.BoolVar(&personalOpts.Ephemeral, "ephemeral", false,
-		"consume 退出时自动取消个人订阅")
+		"强制退出时取消个人订阅。默认已按归属清理：本次新建的订阅退出即取消，"+
+			"用 --subscribe-id 复用的订阅保留。优雅停可用 SIGTERM、关闭 stdin，"+
+			"或从外部先用 dws event stop <subscribe_id> --dry-run 预览、确认后加 --yes（会一并退订）；"+
+			"请勿 kill -9（会跳过退订、泄漏服务端订阅）")
 	f.StringVar(&personalOpts.UserID, "user", "",
-		"个人单聊对端 userId")
+		"单聊对端或指定发送人的 userId（与 --open-dingtalk-id 二选一）")
+	f.StringVar(&personalOpts.OpenDingTalkID, "open-dingtalk-id", "",
+		"单聊对端或指定发送人的 openDingtalkId（与 --user 二选一）")
 	f.StringVar(&personalOpts.GroupID, "group", "",
 		"group 规则：openConversationId")
 	f.StringVar(&personalOpts.ControlBaseURL, "personal-event-base-url", "",
@@ -290,6 +329,13 @@ func newEventConsumeCommand() *cobra.Command {
 	f.StringVar(&streamOpts.TicketURL, "stream-ticket-url", strings.TrimSpace(os.Getenv("DWS_STREAM_TICKET_URL")),
 		"个人 Stream 取票 URL；默认由 MCP base URL 派生")
 	hideEventInternalFlags(cmd, "as")
+	cli.AnnotateRuntimePositionals(cmd, cli.RuntimeSchemaPositional{
+		Name:        "event_key",
+		Type:        "string",
+		Description: "要消费的个人事件码；省略时仅适用于显式配置其它事件来源的兼容模式",
+		Required:    false,
+		Index:       0,
+	})
 	return cmd
 }
 
@@ -304,7 +350,7 @@ func newEventConsumeCommand() *cobra.Command {
 // can run `dws event consume` from another shell to consume the events.
 // v2 may add a "foreground + in-process consumer" combined mode.
 func runForegroundBus(ctx context.Context, cfg consume.Config, configDir, clientSecret string, streamOpts eventStreamTicketOptions) error {
-	src, err := newEventSource(ctx, configDir, cfg.ClientID, clientSecret, streamOpts)
+	src, err := eventNewEventSource(ctx, configDir, cfg.ClientID, clientSecret, streamOpts)
 	if err != nil {
 		return err
 	}
@@ -319,7 +365,7 @@ func runForegroundBus(ctx context.Context, cfg consume.Config, configDir, client
 		Logger:       slog.Default(),
 	}
 	bus.ApplyEnvTuning(&busCfg)
-	return bus.Run(ctx, busCfg)
+	return eventBusRun(ctx, busCfg)
 }
 
 type eventStreamTicketOptions struct {
@@ -367,20 +413,12 @@ func eventStreamBusID(streamOpts eventStreamTicketOptions) string {
 	return "portal-ticket-normal:" + sourceID
 }
 
-func newEventSource(ctx context.Context, configDir, clientID, clientSecret string, streamOpts eventStreamTicketOptions) (*source.DingtalkSource, error) {
+func newEventSource(_ context.Context, configDir, clientID, clientSecret string, streamOpts eventStreamTicketOptions) (*source.DingtalkSource, error) {
 	if !streamOpts.enabled() {
-		return source.New(source.Config{
+		return eventNewDingtalkSource(source.Config{
 			ClientID:     clientID,
 			ClientSecret: clientSecret,
 		})
-	}
-
-	token, err := ResolveAuxiliaryAccessToken(ctx, configDir, "")
-	if err != nil {
-		return nil, fmt.Errorf("event stream ticket: resolve user token: %w", err)
-	}
-	if strings.TrimSpace(token) == "" {
-		return nil, errors.New("event stream ticket: empty user token")
 	}
 
 	portalClientID := clientID
@@ -390,17 +428,16 @@ func newEventSource(ctx context.Context, configDir, clientID, clientSecret strin
 		portalClientSecret = ""
 	}
 
-	return source.New(source.Config{
+	return eventNewDingtalkSource(source.Config{
 		ClientID:     portalClientID,
 		ClientSecret: portalClientSecret,
 		PortalTicket: &source.PortalTicketConfig{
-			TicketURL:   eventStreamTicketURL(streamOpts.TicketURL),
-			AccessToken: token,
-			AccessTokenProvider: func(pctx context.Context) (string, error) {
-				return ResolveAuxiliaryAccessToken(pctx, configDir, "")
+			TicketURL: eventStreamTicketURL(streamOpts.TicketURL),
+			AccessTokenProvider: func(ctx context.Context) (string, error) {
+				return eventResolveAccessToken(ctx, configDir, "")
 			},
-			ForceRefreshToken: func(pctx context.Context) (string, error) {
-				return ForceRefreshAccessToken(pctx, configDir)
+			RefreshRejectedToken: func(ctx context.Context, rejectedToken string) (string, error) {
+				return forceRefreshRejectedAccessToken(ctx, configDir, rejectedToken)
 			},
 			SourceID:     eventStreamSourceID(streamOpts.SourceID),
 			Mode:         streamOpts.Mode,
@@ -460,10 +497,16 @@ func newEventBusCommand() *cobra.Command {
 
 			// Acquire ReadyPipe early so pre-bus.Run failures can signal
 			// 'E' to the parent process instead of silently dying.
-			readyPipe := busctl.ReadyFDFromEnv()
+			readyPipe := eventReadyFDFromEnv()
 			failEarly := func(err error) error {
 				if readyPipe != nil {
+					// 'E' signals failure; the trailing text lets the parent
+					// (busctl.waitReady) surface the real startup error to the
+					// user instead of an opaque "startup failure on ready pipe".
 					_, _ = readyPipe.Write([]byte{'E'})
+					if err != nil {
+						_, _ = io.WriteString(readyPipe, err.Error())
+					}
 					_ = readyPipe.Close()
 				}
 				return err
@@ -475,7 +518,7 @@ func newEventBusCommand() *cobra.Command {
 				sourceKind = dwsevent.SourceKindAppStream
 			}
 			if sourceKind == dwsevent.SourceKindPersonalStream {
-				identity, err := resolvePersonalEventIdentity(ctx, configDir, streamOpts.SourceID)
+				identity, err := eventResolvePersonal(ctx, configDir, streamOpts.SourceID)
 				if err != nil {
 					return failEarly(fmt.Errorf("event _bus: %w", err))
 				}
@@ -486,7 +529,7 @@ func newEventBusCommand() *cobra.Command {
 				editionName := editionNameOrDefault()
 				workDir := eventWorkDir(configDir, editionName, dwsevent.SourceKindPersonalStream, identityHash)
 				endpoint := defaultIPCEndpoint(workDir, editionName, dwsevent.SourceKindPersonalStream, identityHash)
-				src, err := newPersonalStreamSource(ctx, personalStreamSourceOptions{
+				src, err := eventNewPersonalSource(ctx, personalStreamSourceOptions{
 					ConfigDir:        configDir,
 					Identity:         identity,
 					TicketMode:       streamOpts.Mode,
@@ -496,8 +539,8 @@ func newEventBusCommand() *cobra.Command {
 				if err != nil {
 					return failEarly(err)
 				}
-				if err := os.MkdirAll(workDir, config.DirPerm); err == nil {
-					if lf, ferr := os.OpenFile(filepath.Join(workDir, "bus.log"),
+				if err := eventMkdirAll(workDir, config.DirPerm); err == nil {
+					if lf, ferr := eventOpenFile(filepath.Join(workDir, "bus.log"),
 						os.O_CREATE|os.O_WRONLY|os.O_APPEND, config.FilePerm); ferr == nil {
 						defer lf.Close()
 						slog.SetDefault(slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -517,10 +560,10 @@ func newEventBusCommand() *cobra.Command {
 					Logger:       slog.Default(),
 				}
 				bus.ApplyEnvTuning(&busCfg)
-				return bus.Run(ctx, busCfg)
+				return eventBusRun(ctx, busCfg)
 			}
 
-			resolvedID, secret, err := resolveEventCredentials(configDir, streamOpts)
+			resolvedID, secret, err := eventResolveCredentials(configDir, streamOpts)
 			if err != nil {
 				return failEarly(fmt.Errorf("event _bus: %w", err))
 			}
@@ -533,7 +576,7 @@ func newEventBusCommand() *cobra.Command {
 			workDir := eventWorkDir(configDir, editionName, dwsevent.SourceKindAppStream, clientIDHash)
 			endpoint := defaultIPCEndpoint(workDir, editionName, dwsevent.SourceKindAppStream, clientIDHash)
 
-			src, err := newEventSource(ctx, configDir, clientID, secret, streamOpts)
+			src, err := eventNewEventSource(ctx, configDir, clientID, secret, streamOpts)
 			if err != nil {
 				return failEarly(err)
 			}
@@ -542,8 +585,8 @@ func newEventBusCommand() *cobra.Command {
 			// own log lines never pollute stdout/stderr (which busctl/Spawn
 			// detached). Best-effort: if mkdir / open fails we fall back
 			// to slog.Default (stderr) so we at least see startup errors.
-			if err := os.MkdirAll(workDir, config.DirPerm); err == nil {
-				if lf, ferr := os.OpenFile(filepath.Join(workDir, "bus.log"),
+			if err := eventMkdirAll(workDir, config.DirPerm); err == nil {
+				if lf, ferr := eventOpenFile(filepath.Join(workDir, "bus.log"),
 					os.O_CREATE|os.O_WRONLY|os.O_APPEND, config.FilePerm); ferr == nil {
 					defer lf.Close()
 					slog.SetDefault(slog.New(slog.NewTextHandler(lf, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -565,7 +608,7 @@ func newEventBusCommand() *cobra.Command {
 			// env-var tuning (only fills in fields left at zero; explicit
 			// flags above keep precedence).
 			bus.ApplyEnvTuning(&busCfg)
-			return bus.Run(ctx, busCfg)
+			return eventBusRun(ctx, busCfg)
 		},
 	}
 	cmd.Flags().StringVar(&clientIDOverride, "client-id", "",
@@ -622,7 +665,7 @@ func newEventListCommand() *cobra.Command {
 		Args:              cobra.NoArgs,
 		DisableAutoGenTag: true,
 		RunE: func(c *cobra.Command, _ []string) error {
-			as, err := normalizeEventAs(asIdentity)
+			as, err := eventNormalizeAs(asIdentity)
 			if err != nil {
 				return err
 			}
@@ -630,7 +673,7 @@ func newEventListCommand() *cobra.Command {
 				if err := rejectPersonalEventUnsupportedFlags(c, "all", "all-editions", "client-id"); err != nil {
 					return fmt.Errorf("event list: %w", err)
 				}
-				return runPersonalEventList(c, personalListOptions{
+				return eventRunPersonalList(c, personalListOptions{
 					Category:       category,
 					EnabledOnly:    enabledOnly,
 					IncludePending: includePending,
@@ -684,7 +727,7 @@ func newEventStatusCommand() *cobra.Command {
 		Args:              cobra.NoArgs,
 		DisableAutoGenTag: true,
 		RunE: func(c *cobra.Command, _ []string) error {
-			as, err := normalizeEventAs(asIdentity)
+			as, err := eventNormalizeAs(asIdentity)
 			if err != nil {
 				return err
 			}
@@ -693,7 +736,7 @@ func newEventStatusCommand() *cobra.Command {
 					return fmt.Errorf("event status: %w", err)
 				}
 				personalOpts.Format = formatRaw
-				return runPersonalEventStatus(c, personalOpts)
+				return eventRunPersonalStatus(c, personalOpts)
 			}
 			if err := rejectChangedFlags(c, "user", "event", "status", "subscribe-id", "personal-event-base-url", "stream-source-id"); err != nil {
 				return fmt.Errorf("event status: %w", err)
@@ -744,14 +787,14 @@ func collectEntries(c *cobra.Command, clientIDOver string, all, allEditions bool
 
 	// --all-editions trumps --all (scan whole tree)
 	if allEditions {
-		entries, err := busctl.EnumerateBuses(configDir, "")
+		entries, err := eventEnumerateBuses(configDir, "")
 		if err != nil {
 			return nil, err
 		}
 		return queryAll(entries), nil
 	}
 	if all {
-		entries, err := busctl.EnumerateBuses(configDir, editionName)
+		entries, err := eventEnumerateBuses(configDir, editionName)
 		if err != nil {
 			return nil, err
 		}
@@ -762,14 +805,14 @@ func collectEntries(c *cobra.Command, clientIDOver string, all, allEditions bool
 	// otherwise resolve via strict resolver.
 	clientID := clientIDOver
 	if clientID == "" {
-		resolved, _, _, _, err := authpkg.ResolveAppCredentialsStrict(configDir)
+		resolved, _, _, _, err := eventResolveAppCredentials(configDir)
 		if err != nil {
 			return nil, fmt.Errorf("event status: resolve credentials: %w (or pass --client-id)", err)
 		}
 		clientID = resolved
 	}
 	hash := dwsevent.ClientIDHash(clientID)
-	entry := busctl.FindBusByClientID(configDir, editionName, hash)
+	entry := eventFindBus(configDir, editionName, hash)
 	if entry == nil {
 		// No directory at all — render an empty "not running" so the user
 		// sees a useful answer instead of an error.
@@ -793,13 +836,13 @@ func collectEntries(c *cobra.Command, clientIDOver string, all, allEditions bool
 	if entry.Meta == nil {
 		entry.Meta = &bus.Meta{ClientID: clientID, Edition: editionName}
 	}
-	return []busctl.EntryStatus{busctl.QueryEntry(*entry)}, nil
+	return []busctl.EntryStatus{eventQueryEntry(*entry)}, nil
 }
 
 func queryAll(entries []busctl.BusEntry) []busctl.EntryStatus {
 	out := make([]busctl.EntryStatus, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, busctl.QueryEntry(e))
+		out = append(out, eventQueryEntry(e))
 	}
 	return out
 }
@@ -969,13 +1012,26 @@ func newEventStopCommand() *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		DisableAutoGenTag: true,
 		RunE: func(c *cobra.Command, args []string) error {
-			as, err := normalizeEventAs(asIdentity)
+			as, err := eventNormalizeAs(asIdentity)
 			if err != nil {
 				return err
 			}
 			if as == "user" {
 				opts.SubscribeID = firstArg(args)
-				return runPersonalEventStop(c, opts)
+				hasSubscribeID := strings.TrimSpace(opts.SubscribeID) != ""
+				if hasSubscribeID && opts.All {
+					return fmt.Errorf("event stop --as user: subscribe_id and --all are mutually exclusive")
+				}
+				if !hasSubscribeID && !opts.All {
+					return fmt.Errorf("event stop --as user: subscribe_id is required unless --all is set")
+				}
+				if eventStopDryRun(c) {
+					return writeEventStopDryRun(c, as, opts)
+				}
+				if !eventStopConfirmed(c) {
+					return eventStopConfirmationRequired("event stop 会取消个人事件订阅并停止本地消费")
+				}
+				return eventRunPersonalStop(c, opts)
 			}
 			if err := rejectChangedFlags(c, "user", "all", "personal-event-base-url", "stream-source-id"); err != nil {
 				return fmt.Errorf("event stop: %w", err)
@@ -983,15 +1039,21 @@ func newEventStopCommand() *cobra.Command {
 			if len(args) > 0 {
 				return fmt.Errorf("event stop: subscribe_id is only supported with --as user")
 			}
+			if eventStopDryRun(c) {
+				return writeEventStopDryRun(c, as, opts)
+			}
+			if !eventStopConfirmed(c) {
+				return eventStopConfirmationRequired("event stop 会停止事件消费")
+			}
 			configDir := defaultConfigDir()
-			clientID, _, _, _, err := authpkg.ResolveAppCredentialsStrict(configDir)
+			clientID, _, _, _, err := eventResolveAppCredentials(configDir)
 			if err != nil {
 				return fmt.Errorf("event stop: %w", err)
 			}
 			editionName := editionNameOrDefault()
 			clientIDHash := dwsevent.ClientIDHash(clientID)
 			workDir := eventWorkDir(configDir, editionName, dwsevent.SourceKindAppStream, clientIDHash)
-			if err := busctl.Stop(busctl.StopConfig{WorkDir: workDir}); err != nil {
+			if err := eventStopBus(busctl.StopConfig{WorkDir: workDir}); err != nil {
 				if errors.Is(err, busctl.ErrNotRunning) {
 					fmt.Fprintln(c.OutOrStdout(), "bus is not running")
 					return nil
@@ -1008,7 +1070,48 @@ func newEventStopCommand() *cobra.Command {
 		"个人事件 sourceId；开源版默认 open，可由 edition 覆盖")
 	cmd.Flags().BoolVar(&opts.All, "all", false, "取消当前身份下本地记录的所有个人订阅")
 	hideEventInternalFlags(cmd, "as")
+	cli.AnnotateRuntimePositionals(cmd, cli.RuntimeSchemaPositional{
+		Name:        "subscribe_id",
+		Type:        "string",
+		Description: "要取消的个人事件订阅 ID；与 --all 二选一",
+		Required:    false,
+		Index:       0,
+	})
 	return cmd
+}
+
+func eventStopDryRun(cmd *cobra.Command) bool {
+	value, _ := cmd.Flags().GetBool("dry-run")
+	return value
+}
+
+func eventStopConfirmed(cmd *cobra.Command) bool {
+	value, _ := cmd.Flags().GetBool("yes")
+	return value
+}
+
+func eventStopConfirmationRequired(action string) error {
+	return apperrors.NewValidation(
+		action+"；请先使用 --dry-run 预览，确认后加 --yes 执行",
+		apperrors.WithReason("confirmation_required"),
+		apperrors.WithHint("先以相同参数加 --dry-run 预览；获得用户确认后改用 --yes 执行"),
+		apperrors.WithActions("使用 --dry-run 生成预览", "获得用户确认后使用 --yes 执行"),
+	)
+}
+
+func writeEventStopDryRun(cmd *cobra.Command, identity string, opts personalStopOptions) error {
+	payload := map[string]any{
+		"dry_run":  true,
+		"action":   "event.stop",
+		"identity": strings.TrimSpace(identity),
+		"all":      opts.All,
+	}
+	if subscribeID := strings.TrimSpace(opts.SubscribeID); subscribeID != "" {
+		payload["subscribe_id"] = subscribeID
+	}
+	encoder := json.NewEncoder(cmd.OutOrStdout())
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(payload)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1097,6 +1200,32 @@ func firstArg(args []string) string {
 		return ""
 	}
 	return args[0]
+}
+
+// shouldWatchStdinEOF gates the stdin-EOF shutdown watcher (AI-subprocess
+// contract). It arms only for a parent-controlled, pipe-style stdin on an
+// unbounded run:
+//   - bounded runs (--max-events / --duration) already have their own
+//     lifecycle, so stdin is irrelevant;
+//   - char devices (an interactive TTY, or /dev/null) are excluded, so a
+//     terminal Ctrl-D and the common `< /dev/null` launch do NOT trigger a
+//     surprise shutdown. Only a pipe / regular file — an stdin a parent
+//     holds and can close to stop us — arms the watcher.
+func shouldWatchStdinEOF(maxEvents int, duration time.Duration) bool {
+	if maxEvents > 0 || duration > 0 {
+		return false
+	}
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice == 0
+}
+
+func applyEventConsumeStdin(cfg *consume.Config, maxEvents int, duration time.Duration, stdin io.Reader) {
+	if cfg != nil && shouldWatchStdinEOF(maxEvents, duration) {
+		cfg.Stdin = stdin
+	}
 }
 
 // eventTypesWithDefault picks the catch-all list from registry when the

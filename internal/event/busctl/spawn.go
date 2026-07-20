@@ -20,8 +20,11 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 )
+
+var busctlReadFull = io.ReadFull
 
 // ReadyFDEnv is the env var the spawned `event _bus` child inspects to find
 // the ready-pipe write end. The parent passes the FD number; child opens it
@@ -33,7 +36,12 @@ const ReadyFDEnv = "DWS_EVENT_BUS_READY_FD"
 // 10s is generous — bus startup is local-only work (file I/O + socket bind),
 // so 1s would normally suffice; the extra headroom covers cold-start
 // keychain prompts and slow CI machines.
-const ReadyTimeout = 10 * time.Second
+var ReadyTimeout = 10 * time.Second
+
+var (
+	spawnExecutable = os.Executable
+	spawnPipe       = os.Pipe
+)
 
 // ErrSpawnFailed is returned when the child reports startup failure via
 // the ready pipe ('E' byte). The child's exit error / log file holds the
@@ -86,7 +94,7 @@ func Spawn(cfg SpawnConfig) (pid int, err error) {
 		return 0, errors.New("busctl: SpawnConfig.ClientID is required")
 	}
 	if cfg.ExecPath == "" {
-		execPath, err := os.Executable()
+		execPath, err := spawnExecutable()
 		if err != nil {
 			return 0, fmt.Errorf("busctl: locate executable: %w", err)
 		}
@@ -96,7 +104,7 @@ func Spawn(cfg SpawnConfig) (pid int, err error) {
 		cfg.Env = os.Environ()
 	}
 
-	pr, pw, err := os.Pipe()
+	pr, pw, err := spawnPipe()
 	if err != nil {
 		return 0, fmt.Errorf("busctl: pipe: %w", err)
 	}
@@ -136,23 +144,34 @@ func Spawn(cfg SpawnConfig) (pid int, err error) {
 	return pid, nil
 }
 
-// waitReady reads exactly one byte from pr ('R' or 'E') within ReadyTimeout.
-// pr is closed by the caller on return.
+// waitReady reads the child's ready signal within ReadyTimeout. The first
+// byte is 'R' (ready) or 'E' (error); on 'E' the child may write its real
+// error text after the byte and close the pipe, which we surface so the
+// caller sees WHY the bus failed to start (instead of an opaque
+// ErrSpawnFailed). pr is closed by the caller on return.
 func waitReady(pr *os.File) error {
 	type result struct {
 		b   byte
+		msg string
 		err error
 	}
 	done := make(chan result, 1)
 	go func() {
 		buf := make([]byte, 1)
-		n, err := io.ReadFull(pr, buf)
+		n, err := busctlReadFull(pr, buf)
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
 		if n != 1 {
 			done <- result{err: io.ErrUnexpectedEOF}
+			return
+		}
+		if buf[0] == 'E' {
+			// Failure: read the trailing error text (bounded), which the
+			// child writes right after 'E' before closing.
+			rest, _ := io.ReadAll(io.LimitReader(pr, 4096))
+			done <- result{b: 'E', msg: strings.TrimSpace(string(rest))}
 			return
 		}
 		done <- result{b: buf[0]}
@@ -169,6 +188,9 @@ func waitReady(pr *os.File) error {
 		case 'R':
 			return nil
 		case 'E':
+			if res.msg != "" {
+				return fmt.Errorf("%w: %s", ErrSpawnFailed, res.msg)
+			}
 			return ErrSpawnFailed
 		default:
 			return fmt.Errorf("busctl: unexpected ready byte %q", res.b)

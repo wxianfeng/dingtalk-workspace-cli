@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
 	dwsevent "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
 	"github.com/gorilla/websocket"
@@ -41,19 +42,50 @@ const (
 )
 
 type PersonalConfig struct {
-	AccessToken         string
-	AccessTokenProvider func(context.Context) (string, error) // optional: 优先于 AccessToken
-	ForceRefreshToken   func(context.Context) (string, error) // optional: 401 时调用
-	ClientID            string
-	ClientSecret        string
-	SourceID        string
-	TicketURL       string
-	TicketMode      string
-	HTTPClient      *http.Client
-	WebSocketDialer *websocket.Dialer
-	Now             func() time.Time
-	ReconnectMin    time.Duration
-	ReconnectMax    time.Duration
+	AccessToken          string
+	AccessTokenProvider  AccessTokenProvider
+	RefreshRejectedToken RejectedAccessTokenRefresher
+	ClientID             string
+	ClientSecret         string
+	SourceID             string
+	TicketURL            string
+	TicketMode           string
+	HTTPClient           *http.Client
+	WebSocketDialer      *websocket.Dialer
+	Now                  func() time.Time
+	ReconnectMin         time.Duration
+	ReconnectMax         time.Duration
+}
+
+type AccessTokenProvider func(context.Context) (string, error)
+
+// RejectedAccessTokenRefresher refreshes only when rejectedAccessToken is
+// still the persisted credential. This preserves the compare-and-refresh
+// semantics used by the runtime runner under concurrent 401 responses.
+type RejectedAccessTokenRefresher func(context.Context, string) (string, error)
+
+type accessTokenRefreshError struct {
+	component string
+	cause     error
+}
+
+func (e *accessTokenRefreshError) Error() string {
+	message := "access token refresh failed"
+	if e == nil || strings.TrimSpace(e.component) == "" {
+		return message
+	}
+	message = e.component + ": " + message
+	if status := refreshHTTPStatus(e.cause); status != 0 {
+		message += fmt.Sprintf(" (HTTP %d)", status)
+	}
+	return message
+}
+
+func (e *accessTokenRefreshError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 type PersonalSource struct {
@@ -75,8 +107,8 @@ type ticketResponse struct {
 }
 
 func NewPersonal(cfg PersonalConfig) (*PersonalSource, error) {
-	if strings.TrimSpace(cfg.AccessToken) == "" && cfg.AccessTokenProvider == nil {
-		return nil, errors.New("personal source: AccessToken is required")
+	if cfg.AccessTokenProvider == nil && strings.TrimSpace(cfg.AccessToken) == "" {
+		return nil, errors.New("personal source: AccessToken or AccessTokenProvider is required")
 	}
 	if strings.TrimSpace(cfg.ClientID) == "" {
 		return nil, errors.New("personal source: ClientID is required")
@@ -131,9 +163,6 @@ func (s *PersonalSource) Start(ctx context.Context, emit dwsevent.EmitFn) error 
 	backoff := s.cfg.ReconnectMin
 	for {
 		acked, err := s.runAttempt(ctx, emit)
-		if err == nil {
-			return nil
-		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -197,6 +226,13 @@ func (s *PersonalSource) runAttempt(ctx context.Context, emit dwsevent.EmitFn) (
 }
 
 func (s *PersonalSource) fetchTicket(ctx context.Context) (*ticketResponse, error) {
+	accessToken, err := resolveSourceAccessToken(ctx, s.cfg.AccessTokenProvider, s.cfg.AccessToken, "personal source")
+	if err != nil {
+		if authpkg.ClassifyRefreshFailure(err) == authpkg.RefreshFailureTransient {
+			return nil, retryPersonal(err)
+		}
+		return nil, err
+	}
 	body := map[string]any{
 		"sourceId": s.cfg.SourceID,
 		"mode":     s.cfg.TicketMode,
@@ -205,23 +241,13 @@ func (s *PersonalSource) fetchTicket(ctx context.Context) (*ticketResponse, erro
 		body["clientId"] = s.cfg.ClientID
 		body["clientSecret"] = s.cfg.ClientSecret
 	}
-	b, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+	b, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.TicketURL, bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("personal source: create ticket request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	accessToken := s.cfg.AccessToken
-	if s.cfg.AccessTokenProvider != nil {
-		if tok, err := s.cfg.AccessTokenProvider(ctx); err == nil && tok != "" {
-			accessToken = tok
-		}
-		// provider 出错时 fallback 到 string 字段
-	}
 	req.Header.Set("x-user-access-token", accessToken)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("X-DWS-Client-Id", s.cfg.ClientID)
@@ -238,11 +264,16 @@ func (s *PersonalSource) fetchTicket(ctx context.Context) (*ticketResponse, erro
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		err := fmt.Errorf("personal source: ticket HTTP %d", resp.StatusCode)
-		if resp.StatusCode == http.StatusUnauthorized && s.cfg.ForceRefreshToken != nil {
-			if _, refreshErr := s.cfg.ForceRefreshToken(ctx); refreshErr == nil {
-				return nil, retryPersonal(err) // 刷新成功，标记可重试
+		if resp.StatusCode == http.StatusUnauthorized && s.cfg.RefreshRejectedToken != nil {
+			if _, refreshErr := s.cfg.RefreshRejectedToken(ctx, accessToken); refreshErr == nil {
+				return nil, retryPersonal(err)
+			} else {
+				wrapped := &accessTokenRefreshError{component: "personal source", cause: refreshErr}
+				if authpkg.ClassifyRefreshFailure(refreshErr) == authpkg.RefreshFailureTransient {
+					return nil, retryPersonal(wrapped)
+				}
+				return nil, wrapped
 			}
-			// 刷新失败，401 仍为致命错误
 		}
 		if retryableTicketStatus(resp.StatusCode) {
 			return nil, retryPersonal(err)
@@ -259,6 +290,23 @@ func (s *PersonalSource) fetchTicket(ctx context.Context) (*ticketResponse, erro
 	return ticket, nil
 }
 
+func resolveSourceAccessToken(ctx context.Context, provider AccessTokenProvider, fallback, component string) (string, error) {
+	if provider != nil {
+		token, err := provider(ctx)
+		if err != nil {
+			return "", fmt.Errorf("%s: resolve access token: %w", component, err)
+		}
+		if token = strings.TrimSpace(token); token != "" {
+			return token, nil
+		}
+		return "", fmt.Errorf("%s: access token provider returned empty token", component)
+	}
+	if token := strings.TrimSpace(fallback); token != "" {
+		return token, nil
+	}
+	return "", fmt.Errorf("%s: access token is required", component)
+}
+
 func (s *PersonalSource) handleFrame(conn *websocket.Conn, data []byte, emit dwsevent.EmitFn) error {
 	df, err := payload.DecodeDataFrame(data)
 	if err != nil {
@@ -270,9 +318,7 @@ func (s *PersonalSource) handleFrame(conn *websocket.Conn, data []byte, emit dws
 	resp := payload.NewSuccessDataFrameResponse()
 	resp.SetHeader(payload.DataFrameHeaderKMessageId, df.GetMessageId())
 	resp.SetHeader(payload.DataFrameHeaderKContentType, payload.DataFrameContentTypeKJson)
-	if err := resp.SetJson(event.NewEventProcessResultSuccess()); err != nil {
-		return err
-	}
+	_ = resp.SetJson(event.NewEventProcessResultSuccess())
 	if err := conn.WriteJSON(resp); err != nil {
 		return retryPersonal(fmt.Errorf("personal source: write ack: %w", err))
 	}
@@ -392,9 +438,22 @@ func personalRetryLogError(err error) string {
 		return "personal source: read websocket: connection closed"
 	case strings.Contains(message, "write ack"):
 		return "personal source: write ack: connection error"
+	case authpkg.ClassifyRefreshFailure(err) == authpkg.RefreshFailureTransient:
+		if status := refreshHTTPStatus(err); status != 0 {
+			return fmt.Sprintf("personal source: token refresh HTTP %d", status)
+		}
+		return "personal source: token refresh: temporary network error"
 	default:
 		return "personal source: retryable stream error"
 	}
+}
+
+func refreshHTTPStatus(err error) int {
+	var statusErr *authpkg.HTTPStatusError
+	if !errors.As(err, &statusErr) || statusErr == nil {
+		return 0
+	}
+	return statusErr.StatusCode
 }
 
 func retryableTicketStatus(status int) bool {

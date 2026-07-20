@@ -282,7 +282,11 @@ func defaultHTTPPutFile(ctx context.Context, url string, headers map[string]stri
 }
 
 // httpGetFile downloads file content via HTTP GET. Package-level for test injection.
-var httpGetFile = defaultHTTPGetFile
+var (
+	httpGetFile          = defaultHTTPGetFile
+	docCreateDestination = os.Create
+	docCopyContent       = io.Copy
+)
 
 // SetHTTPGetFile overrides the HTTP GET function (for testing). Pass nil to restore default.
 func SetHTTPGetFile(fn func(ctx context.Context, url string, headers map[string]string, destPath string) error) {
@@ -432,13 +436,13 @@ func defaultHTTPGetFile(ctx context.Context, url string, headers map[string]stri
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
-	outFile, err := os.Create(destPath)
+	outFile, err := docCreateDestination(destPath)
 	if err != nil {
 		return err
 	}
 	defer outFile.Close()
 
-	if _, err := io.Copy(outFile, resp.Body); err != nil {
+	if _, err := docCopyContent(outFile, resp.Body); err != nil {
 		return err
 	}
 
@@ -701,7 +705,7 @@ func buildNodeTransferRunE(mcpToolName string) func(cmd *cobra.Command, args []s
 }
 
 func docFolderFlag(cmd *cobra.Command, extraAliases ...string) string {
-	aliases := append([]string{"parent-id", "parent-folder", "parent-folder-id"}, extraAliases...)
+	aliases := append([]string{"parent-id", "parent-folder", "parent-node-id", "parent-folder-id"}, extraAliases...)
 	return flagOrFallback(cmd, "folder", aliases...)
 }
 
@@ -730,9 +734,6 @@ func previewDocOverwriteDiff(ctx context.Context, cmd *cobra.Command, nodeID, ne
 	}
 	current := extractMarkdownField(text)
 	out := cmd.OutOrStdout()
-	if out == nil {
-		out = os.Stdout
-	}
 	fmt.Fprint(out, renderDocOverwriteDiff(nodeID, current, newMarkdown))
 	return nil
 }
@@ -795,7 +796,7 @@ func newDocCommand() *cobra.Command {
   dws doc create                        创建文档
   dws doc update                        更新文档内容
   dws doc block [list|insert|update|delete]  块级编辑
-  dws doc comment [list|create|delete]  文档评论管理
+  dws doc comment [list|create|reply|update|delete|create-inline]  文档评论管理
   dws doc export                        导出在线文档 (支持 docx / markdown / pdf，自动完成提交→轮询→下载)
   dws doc export get                    查询导出任务结果 (手动兜底)
   dws doc import                        导入本地文件为在线文档 (支持 docx / xlsx / md 等)
@@ -1132,10 +1133,7 @@ WARNING: --mode overwrite 为破坏性写入，会清空原文档全部内容。
 			if idx, _ := cmd.Flags().GetInt("index"); cmd.Flags().Lookup("index").Changed {
 				toolArgs["index"] = idx
 			}
-			if md != "" {
-				return docWritePipeline(cmd, "update_document", toolArgs, md, "doc update")
-			}
-			return callMCPTool("update_document", toolArgs)
+			return docWritePipeline(cmd, "update_document", toolArgs, md, "doc update")
 		},
 	}
 
@@ -1237,7 +1235,7 @@ WARNING: --mode overwrite 为破坏性写入，会清空原文档全部内容。
 流程:
   1. 获取下载 URL 和签名请求头 (download_file)
   2. HTTP GET 下载文件二进制内容到本地`,
-		Example: `  dws doc download --node NODE_ID
+		Example: `  dws doc download --node NODE_ID --output ./download.bin
   dws doc download --node NODE_ID --output ./report.pdf
   dws doc download --node "https://alidocs.dingtalk.com/i/nodes/<DOC_UUID>" --output ~/downloads/`,
 		RunE: runDocDownload,
@@ -1951,6 +1949,67 @@ commentKey可从 dws doc comment create 或 dws doc comment list 返回结果中
 	commentReplyCmd.Flags().Bool("emoji", false, "设为 true 时作为表情贴图回复 (默认 false)")
 	commentReplyCmd.Flags().String("mention", "", "被 @ 的用户 uid 列表，逗号分隔")
 
+	commentUpdateCmd := &cobra.Command{
+		Use:   "update",
+		Short: "更新文档评论",
+		Long: `更新指定文档中的一条评论。
+
+--comment-key 为待更新评论的唯一标识，可从 comment list、create 或 create-inline 的返回结果中获取。
+可通过 --mention 指定更新后评论中被 @ 的用户 uid 列表。`,
+		Example: `  dws doc comment update --node DOC_ID --comment-key COMMENT_KEY --content "已按最新数据修正"
+  dws doc comment update --node DOC_ID --comment-key COMMENT_KEY --content "请确认" --mention uid1,uid2`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "doc-id", "file-id")
+			if err != nil {
+				return err
+			}
+			if err := validateRequiredFlags(cmd, "comment-key", "content"); err != nil {
+				return err
+			}
+			toolArgs := map[string]any{
+				"nodeId":     nodeID,
+				"commentKey": mustGetFlag(cmd, "comment-key"),
+				"content":    mustGetFlag(cmd, "content"),
+			}
+			if v, _ := cmd.Flags().GetString("mention"); v != "" {
+				toolArgs["mentionedUserIds"] = parseCommentMentionIds(v)
+			}
+			return callMCPToolOnServer("doc-comment", "update_comment", toolArgs)
+		},
+	}
+	commentUpdateCmd.Flags().String("node", "", "目标文档的标识，支持传入 URL 或 ID (必填)")
+	commentUpdateCmd.Flags().String("comment-key", "", "待更新评论的 commentKey，可从 list/create/create-inline 结果获取 (必填)")
+	commentUpdateCmd.Flags().String("content", "", "更新后的评论文字内容，纯文本 (必填)")
+	commentUpdateCmd.Flags().String("mention", "", "被 @ 的用户 uid 列表，逗号分隔")
+
+	commentDeleteCmd := &cobra.Command{
+		Use:   "delete",
+		Short: "删除文档评论",
+		Long: `删除指定文档中的一条评论。
+
+这是不可恢复的危险操作。执行前需要交互确认，或在用户已明确同意后传入全局 --yes 跳过确认。`,
+		Example: `  dws doc comment delete --node DOC_ID --comment-key COMMENT_KEY --yes`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "doc-id", "file-id")
+			if err != nil {
+				return err
+			}
+			if err := validateRequiredFlags(cmd, "comment-key"); err != nil {
+				return err
+			}
+			commentKey := mustGetFlag(cmd, "comment-key")
+			if !confirmDangerousAction(cmd, "delete 文档评论", commentKey) {
+				return nil
+			}
+			return callMCPToolOnServer("doc-comment", "delete_comment", map[string]any{
+				"nodeId":     nodeID,
+				"commentKey": commentKey,
+			})
+		},
+	}
+	commentDeleteCmd.Flags().String("node", "", "目标文档的标识，支持传入 URL 或 ID (必填)")
+	commentDeleteCmd.Flags().String("comment-key", "", "待删除评论的 commentKey，可从 list/create/create-inline 结果获取 (必填)")
+
 	commentCreateInlineCmd := &cobra.Command{
 		Use:   "create-inline",
 		Short: "创建划词评论",
@@ -2006,7 +2065,7 @@ commentKey可从 dws doc comment create 或 dws doc comment list 返回结果中
 	commentCreateInlineCmd.Flags().String("mention", "", "被 @ 的用户 uid 列表，逗号分隔")
 
 	// comment 子命令的 --node 隐藏别名
-	commentNodeAliasCmds := []*cobra.Command{commentListCmd, commentCreateCmd, commentReplyCmd, commentCreateInlineCmd}
+	commentNodeAliasCmds := []*cobra.Command{commentListCmd, commentCreateCmd, commentReplyCmd, commentUpdateCmd, commentDeleteCmd, commentCreateInlineCmd}
 	for _, c := range commentNodeAliasCmds {
 		c.Flags().String("url", "", "--node 的别名")
 		c.Flags().String("id", "", "--node 的别名")
@@ -2020,7 +2079,7 @@ commentKey可从 dws doc comment create 或 dws doc comment list 返回结果中
 		_ = c.Flags().MarkHidden("file-id")
 	}
 
-	commentCmd.AddCommand(commentListCmd, commentCreateCmd, commentReplyCmd, commentCreateInlineCmd)
+	commentCmd.AddCommand(commentListCmd, commentCreateCmd, commentReplyCmd, commentUpdateCmd, commentDeleteCmd, commentCreateInlineCmd)
 
 	// ── permission (文档协作权限) ────────────────────────────
 	permissionCmd := &cobra.Command{
@@ -2482,133 +2541,7 @@ CLI 内部自动完成全部流程:
   # 自定义导入后的文档名称
   dws doc import --file ./draft.md --name "项目周报"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			filePath := mustGetFlag(cmd, "file")
-			if filePath == "" && len(args) > 0 {
-				filePath = args[0]
-			}
-			if filePath == "" {
-				return fmt.Errorf("flag --file is required (or pass file path as argument)")
-			}
-
-			fi, err := os.Stat(filePath)
-			if err != nil {
-				return fmt.Errorf("cannot read file %s: %w", filePath, err)
-			}
-			if fi.IsDir() {
-				return fmt.Errorf("%s is a directory, not a file", filePath)
-			}
-
-			const maxFileSize = 20 * 1024 * 1024
-			fileSize := fi.Size()
-			if fileSize > maxFileSize {
-				return fmt.Errorf("file size %d bytes exceeds 20MB limit", fileSize)
-			}
-			if fileSize == 0 {
-				return fmt.Errorf("file is empty: %s", filePath)
-			}
-
-			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(filePath)), ".")
-			supportedFormats := map[string]bool{
-				"docx": true, "doc": true, "xlsx": true, "xls": true,
-				"md": true, "txt": true, "xmind": true, "mark": true,
-			}
-			if !supportedFormats[ext] {
-				return fmt.Errorf("unsupported file format %q, supported: docx, doc, xlsx, xls, md, txt, xmind, mark", ext)
-			}
-
-			fileName := filepath.Base(filePath)
-			name, _ := cmd.Flags().GetString("name")
-			if name == "" {
-				name = strings.TrimSuffix(fileName, filepath.Ext(fileName))
-			}
-			folder := flagOrFallback(cmd, "folder", "folder-id")
-			workspace := flagOrFallback(cmd, "workspace", "workspace-id")
-
-			if deps.Caller.DryRun() {
-				deps.Out.PrintKeyValue("操作", "导入本地文件为在线文档")
-				deps.Out.PrintKeyValue("文件", filePath)
-				deps.Out.PrintKeyValue("名称", name)
-				deps.Out.PrintKeyValue("格式", ext)
-				deps.Out.PrintKeyValue("大小", fmt.Sprintf("%d bytes", fileSize))
-				return nil
-			}
-
-			ctx := context.Background()
-
-			deps.Out.PrintInfo("[1/4] 创建导入会话...")
-			sessionArgs := map[string]any{
-				"fileName": name,
-				"suffix":   ext,
-				"fileSize": fileSize,
-			}
-			if folder != "" {
-				sessionArgs["targetFolderId"] = folder
-			}
-			if workspace != "" {
-				sessionArgs["workspaceId"] = workspace
-			}
-
-			sessionText, err := callMCPToolReturnText(ctx, "create_import_session", sessionArgs)
-			if err != nil {
-				return fmt.Errorf("创建导入会话失败: %w", err)
-			}
-
-			var sessionResult map[string]any
-			if err := json.Unmarshal([]byte(sessionText), &sessionResult); err != nil {
-				return fmt.Errorf("解析导入会话响应失败: %w", err)
-			}
-			sessionID, _ := sessionResult["sessionId"].(string)
-			uploadURL, _ := sessionResult["uploadUrl"].(string)
-			if sessionID == "" || uploadURL == "" {
-				deps.Out.PrintRaw(sessionText)
-				return fmt.Errorf("创建导入会话成功但缺少 sessionId 或 uploadUrl")
-			}
-			deps.Out.PrintInfo(fmt.Sprintf("    会话已创建，sessionId: %s", sessionID))
-
-			deps.Out.PrintInfo("[2/4] 上传文件...")
-			if err := httpPutFile(ctx, uploadURL, nil, filePath, fileSize); err != nil {
-				return fmt.Errorf("文件上传失败 (sessionId=%s): %w", sessionID, err)
-			}
-			deps.Out.PrintInfo("    文件上传完成")
-
-			deps.Out.PrintInfo("[3/4] 确认导入，启动格式转换...")
-			confirmText, err := callMCPToolReturnText(ctx, "confirm_import", map[string]any{
-				"sessionId": sessionID,
-			})
-			if err != nil {
-				return fmt.Errorf("确认导入失败 (sessionId=%s): %w", sessionID, err)
-			}
-
-			var confirmResult map[string]any
-			if err := json.Unmarshal([]byte(confirmText), &confirmResult); err != nil {
-				return fmt.Errorf("解析确认导入响应失败: %w", err)
-			}
-			taskID, _ := confirmResult["taskId"].(string)
-			if taskID == "" {
-				deps.Out.PrintRaw(confirmText)
-				return fmt.Errorf("确认导入成功但未返回 taskId")
-			}
-			deps.Out.PrintInfo(fmt.Sprintf("    转换任务已提交，taskId: %s", taskID))
-
-			deps.Out.PrintInfo("[4/4] 等待格式转换完成...")
-			importResult, err := pollDocImportTask(ctx, taskID)
-			if err != nil {
-				return err
-			}
-
-			documentURL, _ := importResult["documentUrl"].(string)
-			documentName, _ := importResult["documentName"].(string)
-			documentType, _ := importResult["documentType"].(string)
-
-			deps.Out.PrintInfo(fmt.Sprintf("导入完成: %s", documentURL))
-			deps.Out.PrintJSON(map[string]any{
-				"success":      true,
-				"taskId":       taskID,
-				"documentUrl":  documentURL,
-				"documentName": documentName,
-				"documentType": documentType,
-			})
-			return nil
+			return runImportCommand(cmd, args, docImportFlowConfig())
 		},
 	}
 	importCmd.Flags().String("file", "", "本地文件路径 (必填)")
@@ -2633,43 +2566,7 @@ CLI 内部自动完成全部流程:
   failed      导入失败`,
 		Example: `  dws doc import get --task-id <TASK_ID>`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			taskID := mustGetFlag(cmd, "task-id")
-			if taskID == "" {
-				return fmt.Errorf("flag --task-id is required")
-			}
-
-			if deps.Caller.DryRun() {
-				deps.Out.PrintKeyValue("操作", "查询导入任务结果")
-				deps.Out.PrintKeyValue("任务ID", taskID)
-				return nil
-			}
-
-			ctx := context.Background()
-			text, err := callMCPToolReturnText(ctx, "query_import_task", map[string]any{"taskId": taskID})
-			if err != nil {
-				return err
-			}
-
-			var result map[string]any
-			if err := json.Unmarshal([]byte(text), &result); err != nil {
-				deps.Out.PrintRaw(text)
-				return nil
-			}
-
-			status, _ := result["status"].(string)
-			message, _ := result["message"].(string)
-
-			switch strings.ToLower(status) {
-			case "completed", "processing":
-				deps.Out.PrintJSON(result)
-				return nil
-			default:
-				deps.Out.PrintJSON(result)
-				if message != "" {
-					return fmt.Errorf("导入任务失败 (status=%s): %s", status, message)
-				}
-				return fmt.Errorf("导入任务失败 (status=%s)", status)
-			}
+			return runImportGetCommand(cmd, docImportFlowConfig())
 		},
 	}
 	importGetCmd.Flags().String("task-id", "", "导入任务 ID (必填)")
@@ -2744,7 +2641,7 @@ CLI 内部自动完成全部流程:
 			if !exists {
 				return fmt.Errorf("文档版本 %d 不存在，已停止回滚；请先执行 dws doc version list --node %s --format json 获取可回滚版本", version, nodeID)
 			}
-			if !confirmDelete("文档版本回滚", nodeID) {
+			if !confirmDangerousAction(cmd, fmt.Sprintf("revert document to version %d", version), nodeID) {
 				return nil
 			}
 			return callMCPToolOnServer("doc", "revert_doc_version", map[string]any{
@@ -3139,7 +3036,7 @@ func pollDocExportJob(ctx context.Context, jobID string) (downloadURL string, er
 		select {
 		case <-ctx.Done():
 			return "", fmt.Errorf("导出轮询被取消 (jobId=%s): %w", jobID, ctx.Err())
-		case <-time.After(interval):
+		case <-helperAfter(interval):
 		}
 
 		text, queryErr := callMCPToolReturnText(ctx, "query_export_job", map[string]any{"jobId": jobID})
@@ -3174,63 +3071,6 @@ func pollDocExportJob(ctx context.Context, jobID string) (downloadURL string, er
 	}
 
 	return "", fmt.Errorf("导出任务超时：已轮询 %d 次仍在处理中 (jobId=%s)，请稍后使用 dws doc export get --job-id %s 手动查询", maxPolls, jobID, jobID)
-}
-
-// pollDocImportTask polls the import task status with progressive backoff.
-func pollDocImportTask(ctx context.Context, taskID string) (map[string]any, error) {
-	const maxPolls = 30
-
-	pollInterval := func(attempt int) time.Duration {
-		switch {
-		case attempt <= 5:
-			return 2 * time.Second
-		case attempt <= 10:
-			return 5 * time.Second
-		case attempt <= 20:
-			return 10 * time.Second
-		default:
-			return 15 * time.Second
-		}
-	}
-
-	for attempt := 1; attempt <= maxPolls; attempt++ {
-		interval := pollInterval(attempt)
-		deps.Out.PrintInfo(fmt.Sprintf("    第 %d/%d 次查询，等待 %v ...", attempt, maxPolls, interval))
-
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("导入轮询被取消 (taskId=%s): %w", taskID, ctx.Err())
-		case <-time.After(interval):
-		}
-
-		text, queryErr := callMCPToolReturnText(ctx, "query_import_task", map[string]any{"taskId": taskID})
-		if queryErr != nil {
-			return nil, fmt.Errorf("查询导入任务失败 (taskId=%s): %w", taskID, queryErr)
-		}
-
-		var result map[string]any
-		if parseErr := json.Unmarshal([]byte(text), &result); parseErr != nil {
-			return nil, fmt.Errorf("解析查询结果失败 (taskId=%s): %w", taskID, parseErr)
-		}
-
-		status, _ := result["status"].(string)
-		switch strings.ToLower(status) {
-		case "completed":
-			return result, nil
-		case "processing":
-			continue
-		case "failed":
-			message, _ := result["message"].(string)
-			if message != "" {
-				return nil, fmt.Errorf("导入任务失败 (taskId=%s): %s", taskID, message)
-			}
-			return nil, fmt.Errorf("导入任务失败 (taskId=%s)", taskID)
-		default:
-			continue
-		}
-	}
-
-	return nil, fmt.Errorf("导入任务超时：已轮询 %d 次仍在处理中 (taskId=%s)，请稍后使用 dws doc import get --task-id %s 手动查询", maxPolls, taskID, taskID)
 }
 
 // stripDuplicateTitle removes the leading H1 heading from markdown content

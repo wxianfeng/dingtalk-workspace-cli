@@ -461,6 +461,25 @@ func newRangeBatchSetStyleCmd() *cobra.Command {
 					continue
 				}
 				fmt.Fprintf(os.Stderr, "[%d/%d] update_range sheet=%s range=%s\n", i+1, total, item.SheetID, item.Range)
+				if deps.Caller.DryRun() {
+					// JSON mode emits one aggregate preview below. Human formats
+					// reuse the shared per-call preview printer.
+					if !jsonMode {
+						_ = callMCPTool("update_range", toolArgs)
+					}
+					if jsonMode {
+						jsonResults = append(jsonResults, map[string]any{
+							"index":     i + 1,
+							"sheetId":   item.SheetID,
+							"range":     item.Range,
+							"ok":        true,
+							"dryRun":    true,
+							"tool":      "update_range",
+							"arguments": toolArgs,
+						})
+					}
+					continue
+				}
 				if jsonMode {
 					text, cerr := callMCPToolReturnText(ctx, "update_range", toolArgs)
 					entry := map[string]any{"index": i + 1, "sheetId": item.SheetID, "range": item.Range}
@@ -503,12 +522,14 @@ func newRangeBatchSetStyleCmd() *cobra.Command {
 			}
 			fmt.Fprintf(os.Stderr, "batch-set-style 完成：共 %d 条，失败 %d 条\n", total, failed)
 			if jsonMode {
-				_ = deps.Out.PrintJSON(map[string]any{
+				if err := deps.Out.PrintJSON(map[string]any{
 					"total":   total,
 					"failed":  failed,
 					"results": jsonResults,
 					"success": failed == 0,
-				})
+				}); err != nil {
+					return err
+				}
 			}
 			if failed > 0 && !continueOnErr {
 				return firstErr

@@ -71,9 +71,9 @@ The installer ships skills in one of two layouts. CLI commands (`dws aitable ...
 | Mode | What gets installed | Best for |
 |------|----------------------|----------|
 | **mono** (stable, default) | One `dws` skill covering all products | Cross-product workflows; single entry point |
-| **multi** 🧪 **EXPERIMENTAL** | 22 per-product skills (`dingtalk-aitable`, `dingtalk-calendar`, `dingtalk-chat`, ...) | Single-product tasks; smaller context per call |
+| **multi** 🧪 **EXPERIMENTAL** | Per-product skills (`dingtalk-aitable`, `dingtalk-calendar`, `dingtalk-chat`, ...) | Single-product tasks; smaller context per call |
 
-> 🧪 **`multi` is currently EXPERIMENTAL / preview.** 22 product-scoped skills all pass the dispatch verifier, but interface, naming and cross-skill references may change in future releases. For production / shared environments, prefer `mono`. File issues if you hit problems.
+> 🧪 **`multi` is currently EXPERIMENTAL / preview.** All product-scoped skills pass the dispatch verifier, but interface, naming and cross-skill references may change in future releases. For production / shared environments, prefer `mono`. File issues if you hit problems.
 
 How to pick:
 
@@ -92,6 +92,30 @@ How to pick:
 ```bash
 npm install -g dingtalk-workspace-cli
 ```
+
+Install the latest beta:
+
+```bash
+npm install -g dingtalk-workspace-cli@beta
+```
+
+**Homebrew** (macOS / Linux):
+
+```bash
+brew tap DingTalk-Real-AI/dingtalk-workspace-cli https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli.git
+brew install dingtalk-workspace-cli
+```
+
+> The Formula lives in this repository, so the first `tap` command must include the explicit repository URL. Afterwards, use `brew upgrade dingtalk-workspace-cli` normally.
+
+Install the keg-only Homebrew beta without replacing the stable Formula:
+
+```bash
+brew install dingtalk-workspace-cli-beta
+$(brew --prefix dingtalk-workspace-cli-beta)/bin/dws version
+```
+
+To make the beta `dws` the default for the current shell, prepend `$(brew --prefix dingtalk-workspace-cli-beta)/bin` to PATH.
 
 **Pre-built binary**: download from [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases).
 
@@ -167,6 +191,18 @@ dws upgrade -y                 # skip confirmation prompt
 ```
 
 By default, `dws upgrade` follows the stable release track. Use `--beta` only when you explicitly want the newest GitHub pre-release build.
+
+### Six-channel post-release verification
+
+Maintainers and release validators can run the release-quality smoke checks for curl, PowerShell, npm stable, npm beta, Homebrew, and `dws upgrade`:
+
+```bash
+git clone https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli.git /tmp/dws-verify
+cd /tmp/dws-verify/verify
+bash verify-all-channels.sh
+```
+
+The verifier uses isolated directories and does not replace the `dws` on the current PATH. It reports `PASS`, `FAIL`, and `SKIP`; a platform skip is not a pass and must be covered on the matching host. See [`verify/README.md`](verify/README.md) for the platform matrix.
 
 <details>
 <summary><strong>How it works</strong></summary>
@@ -247,16 +283,22 @@ Credentials are securely persisted after first login (Keychain). Subsequent runs
 <details>
 <summary><strong>Multiple organizations (profiles)</strong></summary>
 
-`dws` can stay logged in to several DingTalk organizations at once. Each organization is one **profile**; the current profile decides which org a command runs against (credentials are stored per organization).
+`dws` can stay logged in to several DingTalk accounts at once, including multiple accounts in the same organization. A profile is uniquely identified by `corpId:userId`; the current profile decides which identity a command runs as.
 
 ```bash
-dws auth login                              # log in to another org → adds a profile (first login becomes the primary)
-dws profile list                            # list logged-in orgs (primary / current marker, status)
-dws profile switch <name|corpId>            # switch the default org (use - to toggle back to the previous one)
-dws --profile <name|corpId> contact user search --query "..."   # run one command against a specific org, without changing the default
+dws auth login                              # add or refresh one account
+dws profile list                            # list every logged-in account
+dws profile switch <corpId:userId>          # persistently switch; use - to toggle back
+dws profile switch "<corpName>:<userName>"  # friendly input; names must be unique
+dws --profile <corpId> contact user search --query "..."        # use that org's explicitly recorded current account
+dws --profile <corpId:userId> contact user search --query "..." # use one exact account without changing the default
 ```
 
-Cross-org reads are orchestrated by the agent rather than a built-in `--all-orgs`: list the profiles, run the query per org with `--profile`, then merge. Writes default to the current org only — confirm the target org before writing across orgs.
+Selectors support `corpId:userId`, `corpId:userName`, `corpName:userId`, and `corpName:userName`. Friendly names are input aliases only; use the stable `profile` value returned by `profile list` for automation. Duplicate organization or account names fail with explicit `corpId:userId` candidates. If an organization has multiple accounts but no recorded current account, `--profile <corpId>` fails instead of choosing the first or most recently used account.
+
+`currentProfile`, `previousProfile`, and per-organization defaults are stored as exact identities. `primaryProfile` remains in JSON only for compatibility and is not used for selection. `profile list` reads status and expiry from each real identity Token without refreshing it. `auth logout --profile <corpId>` removes all local accounts in that organization; an exact selector or local profile name removes one account.
+
+Cross-org reads are orchestrated by the agent rather than a built-in `--all-orgs`: list profiles, group by `corpId`, and use the unique `isOrgCurrent=true` account for each organization. If a multi-account organization has no default, ask the user to choose an account first. Writes default to the current account — confirm both organization and account before cross-org writes.
 
 On macOS, an unreadable registered token slot blocks a new OAuth login rather than risking a mixed Keychain/file-DEK state. If normal terminal commands can still read the login while a sandbox using `DWS_DISABLE_KEYCHAIN=1` cannot, migrate the legacy and profile auth entries without exposing tokens:
 
@@ -266,7 +308,7 @@ env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --yes --form
 DWS_DISABLE_KEYCHAIN=1 dws auth status --format json
 ```
 
-The migration validates every selected auth ciphertext before writing, ignores unrelated application secrets, and can be rerun after an interrupted commit. If validation identifies genuinely damaged ciphertext, remove only the affected profile with `dws auth logout --profile <name|corpId>`, then log in again. Use `dws auth reset` only when you intend to discard every local profile.
+The migration validates every selected auth ciphertext before writing, ignores unrelated application secrets, and can be rerun after an interrupted commit. If validation identifies genuinely damaged ciphertext, remove only the affected account with `dws auth logout --profile <corpId:userId>`, or all accounts in one organization with `--profile <corpId>`, then log in again. Use `dws auth reset` only when you intend to discard every local profile.
 
 </details>
 
@@ -287,6 +329,9 @@ dws auth status   # confirm "Refresh Token: valid"
 ```
 
 The bundle includes the encrypted keychain under `~/.local/share/dws-cli` (with `auth-token.enc` and `dek`) plus required `~/.dws` config files.
+Windows export and import are intentionally rejected before credentials or
+bundles are read: Windows stores credentials as DPAPI-protected HKCU Registry
+values, and the current file-DEK bundle has no safe DPAPI-to-portable conversion.
 
 </details>
 
@@ -323,25 +368,35 @@ dws contact user get-self --jq '.result[0].orgEmployeeModel | {name: .orgUserNam
 
 ### Command Help and Schema
 
-Product commands are compiled into the binary in static endpoint mode. Use `--help` and the bundled Agent Skills as the source of truth; `dws schema` is retained for helper-only schemas such as `dev.*`.
+Use Cobra help and Schema for different parts of the command contract:
+
+- `dws <path> --help` is the source of truth for whether a command exists and which flags the binary accepts.
+- `dws schema "<path>"` is the Agent contract for command selection, parameter mappings and constraints, risk, and confirmation semantics.
+- If Help and Schema disagree, treat it as contract drift: pass only flags accepted by Cobra and use the more conservative safety semantics.
+- Schema describes commands; it does not read or search DingTalk business data. Execute the real product command after discovery.
 
 ```bash
-# Inspect the current compiled command surface
+# Confirm that the command exists and inspect accepted flags
 dws aitable record query --help
 
-# Helper-only schema introspection
-dws schema "dev app create"
+# Discover within a product, then inspect the selected leaf contract
+dws schema aitable
+dws schema "aitable record query"
 
-# Construct the call
+# Execute the real business query
 dws aitable record query --base-id BASE_ID --table-id TABLE_ID --limit 10
 ```
 
+`dws schema --all` exports the complete contract for tooling, CI, audits, and compatibility baselines. Agents should prefer product/group discovery followed by a leaf query to avoid loading the full Catalog into context.
+
 ### Agent Skills
 
-The repo ships a complete Agent Skill system under `skills/`, now organized into two layouts:
+The repo ships a complete Agent Skill system under `skills/`, organized into two layouts:
 
 - `skills/mono/` — single-skill layout (one `SKILL.md` + `references/products/`), recommended default.
-- `skills/multi/` — per-product skills (`dingtalk-aitable/`, `dingtalk-calendar/`, `dingtalk-chat/`, ... 22 products in total), each with its own `SKILL.md`. 🧪 **EXPERIMENTAL / preview — see banner in each multi `SKILL.md` for caveats.**
+- `skills/multi/` — per-product skills (`dingtalk-aitable/`, `dingtalk-calendar/`, `dingtalk-chat/`, ...), each with its own `SKILL.md`. 🧪 **EXPERIMENTAL / preview — see banner in each multi `SKILL.md` for caveats.**
+
+Shared reviewed inputs for Schema generation live separately under `internal/cli/schema_hints/`. They are not Agent Skills and are excluded from binaries and release skill bundles.
 
 After installing, AI tools like Claude Code / Cursor can operate DingTalk directly through natural language:
 
@@ -440,6 +495,9 @@ dws event consume user_im_message_receive_at -f ndjson
 # Listen for one-to-one messages with a specified user
 dws event consume user_im_message_receive_o2o --user <userId> -f ndjson
 
+# Listen by openDingtalkId (external contact, bot, or cross-organization identity)
+dws event consume user_im_message_receive_o2o --open-dingtalk-id <openDingtalkId> -f ndjson
+
 # Listen for messages in a specified group
 dws event consume user_im_message_receive_group --group <openConversationId> -f ndjson
 
@@ -447,6 +505,8 @@ dws event consume user_im_message_receive_group --group <openConversationId> -f 
 dws event status
 dws event stop <subscribe_id>
 ```
+
+For one-to-one and specified-sender events, use exactly one target identity: `--user` for an internal `userId`, or `--open-dingtalk-id` for an `openDingtalkId`. The CLI does not infer or convert between these identity types.
 
 | Feature | Details |
 |---------|---------|
@@ -551,12 +611,13 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocati
 </details>
 
 <details>
-<summary><strong>Schema Introspection</strong> — helper-only schemas in static endpoint mode</summary>
+<summary><strong>Schema Introspection</strong> — Agent command discovery and execution contracts</summary>
 
 ```bash
-dws schema                                              # static endpoint mode note
-dws schema "dev app create"                             # view helper-only schema
-dws schema "dev app create" --jq '.tool.required'        # view required fields
+dws schema aitable                                      # discover product commands
+dws schema "aitable record query"                       # view the selected leaf contract
+dws schema "aitable record query" --jq '.tool.required' # view required fields
+dws schema --all                                        # full export for CI/audit/baselines
 ```
 
 </details>
@@ -608,7 +669,7 @@ See [`docs/robot-quickstart.md`](./docs/robot-quickstart.md) for the full 4-step
 
 | Service | Command | Capabilities |
 |---------|---------|--------------|
-| Contact | `contact` | Look up users by name / mobile / job-number, departments, labels & roles, roster profiles & dismissals |
+| Contact | `contact` | Look up users, departments, labels, roster profiles and dismissals; create enterprises and enterprise accounts; invite employees |
 | Chat / IM | `chat` (`im`) | Send / reply / search messages, group & member management, bot & webhook messaging, reactions, recall |
 | Calendar | `calendar` | Events CRUD, attendees, meeting rooms, free/busy & time suggestions |
 | Todo | `todo` | Create / list / update / complete tasks and comments |

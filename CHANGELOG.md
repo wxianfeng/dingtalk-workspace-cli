@@ -6,13 +6,95 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/) and th
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- **Safe macOS Keychain → file-DEK migration** — `dws auth migrate-keychain --to file-dek` preflights every legacy/profile auth entry before rewriting, ignores unrelated application secrets, supports side-effect-free `--dry-run`, requires explicit `--yes`, and lets sandboxed and normal processes share an existing login without exposing tokens.
+- **Fast guarded beta and stable releases** — successful local release checks now leave a six-hour proof bound to the exact version, commit, repository identity, remote `main`, and stable baseline, so the subsequent guarded `--publish` invocation revalidates authority without repeating tests and packaging. A default-branch governance smoke uses the same dedicated immutable-release credential as the tag workflow before any tag is allocated.
+- **Protected existing-tag recovery** — `dws-release recover <version>` can resume a failed, unpublished annotated tag through the normal contract, build, Developer ID signing, immutable GitHub Release, Homebrew, npm, and OSS jobs. Recovery requires the exact tag object, peeled commit, failed tag-push run, typed version confirmation, and the protected `release-recovery` environment; successful runs are accepted as future beta/stable delivery evidence.
 
 ### Fixed
 
-- **Cross-platform auth regression coverage** — dedicated macOS CI now runs the Darwin-only auth/keychain regression suite with race detection, Windows CI builds and tests the native DPAPI path, and recovery guidance prefers safe migration or per-profile cleanup over destructive global reset.
+- **Long-running event authentication recovery** — personal and portal event streams resolve the current access token for every ticket request, refresh a server-rejected token with compare-and-refresh semantics, and reconnect with backoff when refresh is temporarily blocked by network failures, rate limits, or 5xx responses.
+- **Consistent access-token caching and errors** — runtime, recovery, Skill, PAT polling, and personal/portal event clients now resolve user access tokens through one expiry- and publication-aware manager, so long-running processes reload rotated credentials while keychain, refresh, parse, permission, and cancellation failures remain observable instead of being collapsed into “not authenticated.”
+- **Tag-push GitHub Release publication** — Draft publication now locks one GitHub Release database ID, verifies its exact tag, channel, notes, recovery marker, asset set, and uploaded bytes, then publishes and rechecks that same ID as immutable. Recovery runs use the trusted default-branch release helpers instead of the sealed tag's historical scripts, fixing the Draft-only `GET /releases/tags/{tag}` 404 without allowing the release identity to drift during recovery.
+- **Release preflight reliability** — source-mode installer tests now use isolated temporary checkouts and HOME directories instead of overwriting and deleting the real repository `dws` binary, release preflight explicitly rebuilds before policy checks, and the full-suite runner gives the growing script package a non-flaky five-minute per-suite budget.
+
+## [1.0.53-beta.4] - 2026-07-17
+
+This beta validates the expanded personal IM event subscriptions and the flattened `event consume` structured output introduced after v1.0.53-beta.3.
+
+### Added
+
+- **Expanded personal IM event subscriptions** (#651) — adds one-to-one and group events for message read receipts, recalls, and reactions; publishes the specified-sender receive event; and lets one-to-one/sender subscriptions target either a staff `--user` or an `--open-dingtalk-id`. Event Schema now exposes these alternatives through machine-readable parameter constraints.
+
+### Changed
+
+- **Personal event structured output is now flat** (#651) — `event consume` projects NDJSON/JSON/pretty/compact output into event-specific top-level DTOs, so consumers read fields such as `content`, `sender`, and `conversation_id` directly instead of parsing `.data | fromjson`. This is a breaking change for scripts using the former transport envelope; the original server payload remains available through `-f raw`, while `--debug-raw-events` preserves the full diagnostic envelope.
+
+## [1.0.53-beta.3] - 2026-07-17
+
+This beta validates multi-account profile support and the post-v1.0.53-beta.2 compatibility fixes for Windows portable authentication, IM shortcuts, and Aitable import uploads.
+
+### Added
+
+- **Multiple accounts in one DingTalk organization** — profiles are keyed by `corpId:userId`, `--profile` accepts organization IDs/names plus user IDs/names, and organization-only selection uses its explicitly remembered current account or asks for an exact account when ambiguous.
+
+### Changed
+
+- **Profile-scoped logout and consistent token storage** — `dws auth logout --profile` can remove one account or every account in an organization, while identity token slots remain the source of truth and legacy organization/global mirrors stay compatible without overwriting newer account credentials.
+
+### Fixed
+
+- **Windows portable-auth contract** — `dws auth export` and `dws auth import` now fail early without reading credentials, bundles, or writing files instead of claiming portable-bundle support for DPAPI-protected HKCU Registry credentials.
+- **IM shortcut message tags and compatibility aliases** (#646) — IM send shortcuts now add the same AI-sent marker as `chat message send` by default, support `--ai-tag=false` to opt out, and preserve compatible search, conversation-ID, and page-size aliases.
+- **Aitable import upload file-size validation** (#654) — `dws aitable import upload` and `dws aitable +import-upload` now require a positive `--file-size` and always send it to the upload-preparation API, preventing invalid requests without the actual file size.
+
+## [1.0.53-beta.2] - 2026-07-16
+
+This beta validates the accumulated post-v1.0.52 command surface, release automation, and runtime hardening changes, including enterprise contact onboarding, declarative shortcuts, Sheet/Aitable writes, multi-platform Homebrew formulas, and credential and target-validation fixes.
+
+### Added
+
+- **Contact enterprise onboarding commands** — adds `contact org create`, `contact user invite`, and `contact account create` for creating a DingTalk enterprise, inviting an employee by mobile, and provisioning an enterprise login account, with reviewed Schema contracts and mono/multi Skill routing.
+- **Declarative shortcut commands** (#592) — adds 366 `dws <service> +<command>` shortcuts across 16 services, including one-to-one MCP wrappers and multi-step smart workflows. Shortcuts publish stable Agent-visible contracts with named flags, validation and confirmation metadata, dry-run protection for writes, catalog/help routing, and optional local YAML extensions and usage recording.
+- **Sheet imports and Aitable workflow writes** (#624) — adds `dws sheet import` / `sheet import create` for converting local xlsx/xls files into new online sheets, `sheet import get` for polling import tasks, and `dws aitable workflow create/update` for applying validated `workflow-dsl/v1` definitions, with matching reviewed Agent Schema and bundled Skill guidance.
+- **Official multi-platform Homebrew channel** — stable `Formula/dingtalk-workspace-cli.rb` and keg-only `Formula/dingtalk-workspace-cli-beta.rb` live in this repository and select signed macOS Intel/Apple Silicon or Linux amd64/arm64 artifacts at install time. Stable and beta releases open isolated Formula update PRs after final artifact signing, so beta never replaces the stable Formula. Agent Skills stay under `pkgshare` without mutating the user's home directory, and both tracks are covered by the six-channel post-release verifier.
+
+### Changed
+
+- **Guarded prerelease and stable automation** — adds the guided `dws-release` entry for one-command CHANGELOG preparation, validation-only and annotated-tag publication flows; promotes only an explicitly validated beta; verifies command-tree compatibility and all six packaged binaries; and serializes immutable GitHub Release, npm channel, OSS, Homebrew, and optional Gitee delivery with fail-closed recovery checks.
+- **Reviewed historical release recovery proofs** — release preflight can recognize an explicitly pinned successful recovery delivery for a historical stable tag while still rejecting arbitrary workflow dispatches, mismatched commits, and incomplete release, signing, or publication jobs.
+
+### Fixed
+
+- **PAT organization-policy denials stop immediately** — `PAT_ORG_POLICY_DENIED` now remains terminal even if a backend also returns `flowId`, authorization URLs, or client credentials; the CLI does not mutate process credentials, open a browser, poll, or retry until an organization administrator changes the policy.
+- **Sheet and task invalid-target failures** — `sheet range read/get` now rejects a null cell-info response instead of printing `null` and exiting successfully, while task completion and attachment listing verify that a task exists before calling lenient backend endpoints. Attachment listing is also published through Runtime Schema for schema-first Agent discovery.
+- **Concurrent credential writes and reentrant CLI execution** — secure-token writers now use isolated, exclusive temporary files before atomic replacement so concurrent processes cannot remove each other's in-flight data, and repeated in-process CLI runs close the previous file logger before replacing it instead of retaining the prior log-file handle.
+
+## [1.0.52] - 2026-07-14
+
+This release seals the `v1.0.52` line with personal event subscriptions, a deterministic 22-product Agent command catalog, local user-operation auditing, expanded Open product commands, safer macOS credentials and release signing, and more reliable Connect and IM delivery.
+
+### Added
+
+- **Personal event subscriptions** (#589) — adds `dws event list/schema/consume/status/stop` for user @ mentions, selected one-to-one chats, and selected group chats. `consume` can create or reuse a personal subscription, multiple local consumers share one bus while keeping outputs isolated by event type and subscription, and the mono/multi event Skills ship with the binary.
+- **Open product command capabilities** (#608) — adds Sheet table, pivot-table, and gridline commands; Chat message favorites; Drive statistics and shortcuts; and Doc comment update/delete, with matching mono/multi Skill documentation and command-contract coverage.
+- **Local user-operation audit log** (#555) — operations executed through `dws` now produce redacted daily JSONL records with actor, command and endpoint, result or error category, duration, CLI/platform metadata, and a SHA-256 previous-hash chain for tamper evidence. Writers coordinate through a cross-process file lock and rotate logs safely; `dws audit tail` inspects recent records, `dws audit export` emits date-filtered JSONL or CSV, and `dws audit verify` reports the first broken link in a file's hash chain.
+- **Stable Agent command catalog** (#598) — `dws schema` now ships a deterministic 22-product / 564-tool catalog generated from the executable Cobra tree, with progressive product/group/leaf queries, complete parameter contracts, reviewed command identity and aliases, safety/confirmation metadata, field provenance, and final-delivery completeness/drift gates. The catalog is embedded at build time and does not require runtime MCP `tools/list` discovery.
+- **Reviewed Schema for local commands** (#598, #609) — `event consume/list/schema/status/stop` and `audit export/tail/verify` enter the reviewed `CommandRegistry`, bind to the real Cobra tree at generation time, and ship through the same typed `ToolSpec` and embedded Catalog path as public MCP-backed commands. Leaf, group, product, and `--all` queries are projections of that single delivered model.
+- **Safe macOS Keychain → file-DEK migration** (#597) — `dws auth migrate-keychain --to file-dek` preflights every legacy/profile auth entry before rewriting, ignores unrelated application secrets, supports side-effect-free `--dry-run`, requires explicit `--yes`, and lets sandboxed and normal processes share an existing login without exposing tokens.
+
+### Changed
+
+- **`event consume` AI-subprocess contract** (#609) — emits a fixed ready line and a final controlled-exit summary, supports parent-pipe stdin EOF as graceful shutdown, forwards `--profile` to the detached bus, surfaces bus startup errors, and cleans up subscriptions according to ownership so orchestrators can drive event streams without sleeps or leaked server-side subscriptions.
+- **Wukong IM read-result parity** (#618) — `chat message list` preserves quoted merged-forward and image context; message-search entitlement failures retain the server-provided friendly hint and action URL; and `ding message list` exposes each DING's content alongside its ID and status.
+- **Developer ID signing for official macOS archives** (#605) — official releases now require both Darwin archives to be signed with the configured Apple Developer ID certificate, timestamp, and hardened runtime. The release job validates credentials and signatures and fails closed instead of silently publishing ad-hoc-signed official binaries.
+
+### Fixed
+
+- **Smart-category mappings and runtime network diagnostics** (#591) — `chat category create-smart` now maps category names, group-name keywords, and member OpenDingTalk IDs to the live MCP contract, rejects blank or empty supplied values locally, and reports runtime `tools/call` connection failures as actionable API/network errors instead of internal discovery failures.
+- **Connect daemon restart lifecycle** (#599) — pins the Stream SDK reconnect-race fix, snapshots the running executable before detaching, uses a real 30-second keepalive, and manages each worker as its own Unix process group so launcher cleanup or worker panics no longer cause restart loops or orphan local-agent processes.
+- **Complex Connect messages and attachments** (#606, #612) — rich-text messages retain all embedded pictures in order, queued turns keep every pending attachment, and unknown or future callback shapes reach each Agent backend with their message type and raw JSON instead of being discarded. Attachment recovery is locator-based, nested `chatRecord` pictures/audio/video/files can be recovered from message APIs after Stream ACK, and OpenCode uses a full-duration storyboard for large videos to avoid base64 OOMs while preserving the original download for the turn.
+- **macOS auth survives Keychain mode changes** (#597) — credential reads try existing compatible DEKs without creating key material, updates preserve the DEK that decrypted existing ciphertext, unreadable slots fail closed before token exchange, profile slots use the canonical auth backend, and `auth status` reports ciphertext/key mismatches instead of treating them as ordinary logout. Dedicated macOS race and Windows DPAPI coverage protect the cross-platform paths.
 
 ## [1.0.51] - 2026-07-10
 
@@ -90,7 +172,6 @@ This release promotes the sealed **remove-discovery delivery** from the beta lin
 
 - **Command-surface regression tests** — root-command tests now cover real `contact label`/`role` dry-runs, hidden top-level contact compatibility entries, `chat file upload` downline behavior, and `calendar event list --dry-run`.
 - **Release hygiene tests** — skill markdown policy still blocks unsupported conference routes, plugin loader tests assert optional validation failures stay quiet at WARN level, and doc version cursor extraction has nested-envelope coverage.
-
 ## [1.0.47] - 2026-07-05
 
 This release adds **connector supervision & health monitoring** (`dev connect list/status/restart/stop`) and fixes **bot-to-bot @-mention** delivery end-to-end.

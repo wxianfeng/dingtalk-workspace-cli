@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"reflect"
 	"strings"
 	"testing"
 
+	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/executor"
 	"github.com/spf13/cobra"
 )
@@ -376,7 +378,7 @@ func TestDevAppListBuildsListByConditionParams(t *testing.T) {
 	}
 }
 
-func TestDevAppGetBuildsDetailParams(t *testing.T) {
+func TestCrossPlatformCoverageDevAppGetBuildsDetailParams(t *testing.T) {
 	runner := &captureRunner{}
 	root := newDevAppCommand(runner)
 	var out bytes.Buffer
@@ -393,6 +395,57 @@ func TestDevAppGetBuildsDetailParams(t *testing.T) {
 	want := map[string]any{"unifiedAppId": "u-1"}
 	if !reflect.DeepEqual(runner.last.Params, want) {
 		t.Fatalf("Params = %#v, want %#v", runner.last.Params, want)
+	}
+}
+
+func TestCrossPlatformCoverageDevAppGetBuildsDetailParamsByAppKey(t *testing.T) {
+	runner := &captureRunner{}
+	root := newDevAppCommand(runner)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"get", "--app-key", "dingxxx"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v\noutput:\n%s", err, out.String())
+	}
+	if got := runner.last.Tool; got != "get_dev_app" {
+		t.Fatalf("Tool = %q, want get_dev_app", got)
+	}
+	want := map[string]any{"appKey": "dingxxx"}
+	if !reflect.DeepEqual(runner.last.Params, want) {
+		t.Fatalf("Params = %#v, want %#v", runner.last.Params, want)
+	}
+}
+
+func TestCrossPlatformCoverageDevAppGetPrefersUnifiedAppIDWhenBothPresent(t *testing.T) {
+	runner := &captureRunner{}
+	root := newDevAppCommand(runner)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"get", "--unified-app-id", "u-1", "--app-key", "dingxxx"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v\noutput:\n%s", err, out.String())
+	}
+	want := map[string]any{"unifiedAppId": "u-1", "appKey": "dingxxx"}
+	if !reflect.DeepEqual(runner.last.Params, want) {
+		t.Fatalf("Params = %#v, want %#v", runner.last.Params, want)
+	}
+}
+
+func TestCrossPlatformCoverageDevAppGetRequiresLocator(t *testing.T) {
+	runner := &captureRunner{}
+	root := newDevAppCommand(runner)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"get"})
+
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--unified-app-id 或 --app-key") {
+		t.Fatalf("error = %v, want locator validation", err)
 	}
 }
 
@@ -930,6 +983,62 @@ func TestDevAppMemberAndSecurityRequireWriteGuard(t *testing.T) {
 			}
 			if runner.last.Tool != "" {
 				t.Fatalf("tool = %q, want no invocation", runner.last.Tool)
+			}
+		})
+	}
+}
+
+func TestEveryDevAppWriteCommandRequiresGuard(t *testing.T) {
+	paths := [][]string{
+		{"event", "subscribe"},
+		{"event", "unsubscribe"},
+		{"create"},
+		{"update"},
+		{"delete"},
+		{"disable"},
+		{"enable"},
+		{"webapp", "config"},
+		{"permission", "add"},
+		{"permission", "remove"},
+		{"member", "add"},
+		{"member", "remove"},
+		{"security", "config"},
+		{"robot", "submit"},
+		{"robot", "config"},
+		{"robot", "enable"},
+		{"robot", "disable"},
+		{"version", "create"},
+		{"version", "publish"},
+	}
+
+	for _, path := range paths {
+		path := path
+		t.Run(strings.Join(path, "/"), func(t *testing.T) {
+			runner := &captureRunner{}
+			root := newDevAppTestRoot(runner)
+			var out bytes.Buffer
+			root.SetOut(&out)
+			root.SetErr(&out)
+			root.SetArgs(append([]string{"dev", "app"}, path...))
+
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want write guard")
+			}
+			var appErr *apperrors.Error
+			if !stderrors.As(err, &appErr) {
+				t.Fatalf("error type = %T, want *errors.Error", err)
+			}
+			if appErr.Reason != "confirmation_required" {
+				t.Fatalf("error reason = %q, want confirmation_required", appErr.Reason)
+			}
+			for _, marker := range []string{"写操作", "--dry-run", "--yes"} {
+				if !strings.Contains(err.Error(), marker) {
+					t.Fatalf("error = %q, want %q write-guard marker", err.Error(), marker)
+				}
+			}
+			if runner.last.Tool != "" {
+				t.Fatalf("tool = %q, want no invocation before confirmation", runner.last.Tool)
 			}
 		})
 	}

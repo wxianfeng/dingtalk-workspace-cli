@@ -66,11 +66,15 @@ func safeFileName(account string) string {
 }
 
 func encryptData(plaintext string, key []byte) ([]byte, error) {
+	return encryptDataWithGCM(plaintext, key, cipher.NewGCM)
+}
+
+func encryptDataWithGCM(plaintext string, key []byte, newGCM keychainGCMFactory) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	aesGCM, err := cipher.NewGCM(block)
+	aesGCM, err := newGCM(block)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +92,10 @@ func encryptData(plaintext string, key []byte) ([]byte, error) {
 }
 
 func decryptData(data []byte, key []byte) (string, error) {
+	return decryptDataWithGCM(data, key, cipher.NewGCM)
+}
+
+func decryptDataWithGCM(data []byte, key []byte, newGCM keychainGCMFactory) (string, error) {
 	if len(data) < ivBytes+tagBytes {
 		return "", fmt.Errorf("ciphertext too short")
 	}
@@ -95,7 +103,7 @@ func decryptData(data []byte, key []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	aesGCM, err := cipher.NewGCM(block)
+	aesGCM, err := newGCM(block)
 	if err != nil {
 		return "", err
 	}
@@ -153,6 +161,27 @@ func platformSet(service, account, data string) error {
 	// Atomic rename to prevent file corruption during multi-process writes
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		return err
+	}
+	return nil
+}
+
+func platformValidateAuthTokenEntries(service string) error {
+	paths, err := authTokenCiphertextPaths(service)
+	if err != nil || len(paths) == 0 {
+		return err
+	}
+	key, err := getDEKReadOnly(service)
+	if err != nil {
+		return fmt.Errorf("read DEK for auth token validation: %w", err)
+	}
+	for _, path := range paths {
+		ciphertext, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read keychain entry %q: %w", filepath.Base(path), err)
+		}
+		if _, err := decryptData(ciphertext, key); err != nil {
+			return fmt.Errorf("validate keychain entry %q: %w", filepath.Base(path), err)
+		}
 	}
 	return nil
 }

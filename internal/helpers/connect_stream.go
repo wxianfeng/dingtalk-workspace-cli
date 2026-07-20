@@ -42,7 +42,10 @@ import (
 // silent (they dump every ping/pong).
 type streamSDKLogger struct{}
 
-func (streamSDKLogger) Debugf(format string, args ...interface{}) {}
+func (streamSDKLogger) Debugf(format string, args ...interface{}) {
+	_ = format
+	_ = args
+}
 func (streamSDKLogger) Infof(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "[stream] "+format+"\n", args...)
 }
@@ -68,10 +71,82 @@ type forwarder interface {
 	label() string
 }
 
+type connectStreamClient interface {
+	RegisterChatBotCallbackRouter(chatbot.IChatBotMessageHandler)
+	RegisterCardCallbackRouter(card.ICardCallbackHandler)
+	Start(context.Context) error
+	Close()
+}
+
+type connectChatReplier interface {
+	SimpleReplyMarkdown(context.Context, string, []byte, []byte) error
+	SimpleReplyText(context.Context, string, []byte) error
+}
+
+type connectMediaClient interface {
+	downloadMessageFile(context.Context, string, string) (string, error)
+	downloadMessageFileNamed(context.Context, string, string, string) (string, error)
+	downloadRecoveredChatRecordFile(context.Context, fileInboundInfo) (string, error)
+	getUserUnionID(context.Context, string) (string, error)
+	downloadDentryFile(context.Context, int64, int64, string, string) (string, error)
+}
+
+var (
+	newConnectStreamClient = func(clientID, clientSecret string, keepAlive time.Duration) connectStreamClient {
+		return client.NewStreamClient(
+			client.WithAppCredential(client.NewAppCredentialConfig(clientID, clientSecret)),
+			client.WithAutoReconnect(true),
+			client.WithKeepAlive(keepAlive),
+		)
+	}
+	newConnectChatReplier = func() connectChatReplier { return chatbot.NewChatbotReplier() }
+	newConnectMediaClient = func(clientID, clientSecret string) connectMediaClient {
+		return newAICardClient(clientID, clientSecret, "")
+	}
+)
+
 type streamingForwarder interface {
 	forwarder
 	canStream() bool
 	forwardStream(ctx context.Context, convID, text string, onDelta func(string)) (string, error)
+}
+
+// connectMediaAttachment is a DingTalk attachment that has already been
+// authenticated and downloaded by the common Stream ingress. Keeping the
+// attachment separate from the textual prompt lets multimodal backends pass
+// the original bytes through their native protocol instead of asking the
+// model to infer a local path from prose.
+type connectMediaAttachment struct {
+	LocalPath string
+	FileName  string
+	MediaType string
+}
+
+// attachmentForwarder is implemented by backends with a native attachment
+// transport (for example OpenCode file parts or Gemini inlineData). Backends
+// without one still receive the absolute local path in the prompt and can use
+// their read tool, preserving compatibility with custom agents.
+type attachmentForwarder interface {
+	forwardWithAttachments(ctx context.Context, convID, text string, attachments []connectMediaAttachment) (string, error)
+}
+
+type streamingAttachmentForwarder interface {
+	attachmentForwarder
+	canStream() bool
+	forwardStreamWithAttachments(ctx context.Context, convID, text string, attachments []connectMediaAttachment, onDelta func(string)) (string, error)
+}
+
+func forwardConnectTurn(ctx context.Context, fwd forwarder, convID, prompt string, attachments []connectMediaAttachment, onDelta func(string)) (string, error) {
+	if af, ok := fwd.(streamingAttachmentForwarder); ok {
+		return af.forwardStreamWithAttachments(ctx, convID, prompt, attachments, onDelta)
+	}
+	if af, ok := fwd.(attachmentForwarder); ok {
+		return af.forwardWithAttachments(ctx, convID, prompt, attachments)
+	}
+	if sf, ok := fwd.(streamingForwarder); ok {
+		return sf.forwardStream(ctx, convID, prompt, onDelta)
+	}
+	return fwd.forward(ctx, convID, prompt)
 }
 
 // sessionResetter is an optional capability: a forwarder that can forget a
@@ -337,6 +412,44 @@ func (f *execForwarder) forward(ctx context.Context, convID, text string) (strin
 		f.sessions.reset(convID)
 	}
 	return "", fmt.Errorf("本地 %s agent 调用失败：%s", f.name, truncateRunes(msg, 300))
+}
+
+// forwardWithAttachments grants the Claude-family CLIs read-only access to the
+// exact directories that contain this turn's downloaded attachments. These
+// agents otherwise run from an isolated scratch directory, so an absolute path
+// in prose can still be rejected by their external-directory permission gate.
+// The custom channel is intentionally left untouched because DWS cannot assume
+// flags understood by an arbitrary user command.
+func (f *execForwarder) forwardWithAttachments(ctx context.Context, convID, text string, attachments []connectMediaAttachment) (string, error) {
+	switch f.name {
+	case "claudecode", "codebuddy", "workbuddy":
+	default:
+		return f.forward(ctx, convID, text)
+	}
+	seen := make(map[string]struct{})
+	var dirs []string
+	for _, attachment := range attachments {
+		path := strings.TrimSpace(attachment.LocalPath)
+		if path == "" {
+			continue
+		}
+		dir := filepath.Dir(path)
+		if _, exists := seen[dir]; exists {
+			continue
+		}
+		seen[dir] = struct{}{}
+		dirs = append(dirs, dir)
+	}
+	if len(dirs) == 0 {
+		return f.forward(ctx, convID, text)
+	}
+	clone := *f
+	clone.argv = append([]string{f.argv[0]}, "--allowedTools", "Read")
+	for _, dir := range dirs {
+		clone.argv = append(clone.argv, "--add-dir", dir)
+	}
+	clone.argv = append(clone.argv, f.argv[1:]...)
+	return clone.forward(ctx, convID, text)
 }
 
 // convSessions maps a DingTalk conversation to a stable agent session ID, so a
@@ -699,10 +812,10 @@ var agentSpecs = map[string]agentSpec{
 	"workbuddy": {app: "WorkBuddy（自带 codebuddy）", bins: []string{"codebuddy"},
 		globs: []string{"/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy"},
 		argvTail: []string{"--append-system-prompt",
-			"你叫「WorkBuddy 助手」，是钉钉群里的智能助手。无论被问到你是谁，都只能自称 WorkBuddy 助手，绝不能提到 CodeBuddy 这个名字。请用简洁自然的中文直接回答问题；不要使用任何工具，不要尝试读写文件或执行命令。",
+			"你叫「WorkBuddy 助手」，是钉钉群里的智能助手。无论被问到你是谁，都只能自称 WorkBuddy 助手，绝不能提到 CodeBuddy 这个名字。请用简洁自然的中文直接回答问题；不要主动使用工具、读写文件或执行命令。仅当用户消息明确附带了本地附件路径时，可以使用 Read 工具只读该附件，不得访问其它文件。",
 			"-p"},
 		streamArgvTail: []string{"--append-system-prompt",
-			"你叫「WorkBuddy 助手」，是钉钉群里的智能助手。无论被问到你是谁，都只能自称 WorkBuddy 助手，绝不能提到 CodeBuddy 这个名字。请用简洁自然的中文直接回答问题；不要使用任何工具，不要尝试读写文件或执行命令。",
+			"你叫「WorkBuddy 助手」，是钉钉群里的智能助手。无论被问到你是谁，都只能自称 WorkBuddy 助手，绝不能提到 CodeBuddy 这个名字。请用简洁自然的中文直接回答问题；不要主动使用工具、读写文件或执行命令。仅当用户消息明确附带了本地附件路径时，可以使用 Read 工具只读该附件，不得访问其它文件。",
 			"-p", "--output-format", "stream-json", "--include-partial-messages"},
 		streamParser: "cc", envFn: codebuddyEnv, hint: "https://www.codebuddy.cn/work/",
 		modelFlag: "--model", ccSessions: true},
@@ -941,18 +1054,6 @@ func applyModelArg(argv []string, flag, model string) []string {
 	return append(out[:1:1], append([]string{flag, model}, out[1:]...)...)
 }
 
-func insertBeforeArg(argv []string, marker string, values ...string) []string {
-	for i := 1; i < len(argv); i++ {
-		if argv[i] == marker {
-			out := append([]string(nil), argv[:i]...)
-			out = append(out, values...)
-			return append(out, argv[i:]...)
-		}
-	}
-	out := append([]string(nil), argv...)
-	return append(out, values...)
-}
-
 // msgDedup tracks recently-seen MsgIds so a redelivered message is not
 // processed (and replied to) twice. Memory is bounded: once the set reaches
 // limit it is cleared (the chance of a very old MsgId being redelivered after a
@@ -1000,23 +1101,28 @@ type connectExtras struct {
 	gate     *connectGate
 	kb       *knowledgeBase
 	approval *approvalOrchestrator
+	// onTurnDone is an optional lifecycle observer invoked after one queued
+	// batch has completely finished. It is nil in production and lets focused
+	// tests wait for ack-first work without timing sleeps.
+	onTurnDone func()
 	// persona is a role's system-prompt fragment prepended to every forwarded
 	// prompt (empty = no prefix). Sourced from RoleConfig.Persona.
 	persona string
 }
 
 type connectQueuedTurn struct {
-	convID           string
-	text             string
-	picCode          string
-	fileInfo         fileInboundInfo
-	webhook          string
-	msgID            string
-	msgType          string
-	senderStaffID    string
-	conversationID   string
-	conversationType string
-	callbackData     chatbot.BotCallbackDataModel
+	convID            string
+	text              string
+	picCodes          []string
+	fileInfos         []fileInboundInfo
+	chatRecordLookups []chatRecordLookup
+	webhook           string
+	msgID             string
+	msgType           string
+	senderStaffID     string
+	conversationID    string
+	conversationType  string
+	callbackData      chatbot.BotCallbackDataModel
 }
 
 func mergeConnectQueuedTurns(turns []connectQueuedTurn) connectQueuedTurn {
@@ -1038,17 +1144,13 @@ func mergeConnectQueuedTurns(turns []connectQueuedTurn) connectQueuedTurn {
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, connectTurnSummary(turn)))
 	}
 	merged.text = strings.Join(lines, "\n")
-	if merged.picCode == "" && !merged.fileInfo.hasActionable() {
-		for i := len(turns) - 1; i >= 0; i-- {
-			if turns[i].picCode != "" {
-				merged.picCode = turns[i].picCode
-				break
-			}
-			if turns[i].fileInfo.hasActionable() {
-				merged.fileInfo = turns[i].fileInfo
-				break
-			}
-		}
+	merged.picCodes = nil
+	merged.fileInfos = nil
+	merged.chatRecordLookups = nil
+	for i := range turns {
+		merged.picCodes = append(merged.picCodes, turns[i].picCodes...)
+		merged.fileInfos = append(merged.fileInfos, turns[i].fileInfos...)
+		merged.chatRecordLookups = append(merged.chatRecordLookups, turns[i].chatRecordLookups...)
 	}
 	return merged
 }
@@ -1065,18 +1167,32 @@ func connectTurnShouldStayStandalone(turn connectQueuedTurn) bool {
 
 func connectTurnSummary(turn connectQueuedTurn) string {
 	if text := strings.TrimSpace(turn.text); text != "" {
+		if len(turn.picCodes) > 0 {
+			return text + " [同时附有图片]"
+		}
 		return text
 	}
-	if turn.picCode != "" {
+	if len(turn.picCodes) > 0 {
 		return "[图片]"
 	}
-	if turn.fileInfo.hasActionable() {
-		if name := strings.TrimSpace(turn.fileInfo.FileName); name != "" {
-			return "[文件: " + name + "]"
+	if len(turn.fileInfos) > 0 {
+		if len(turn.fileInfos) == 1 {
+			if name := strings.TrimSpace(turn.fileInfos[0].FileName); name != "" {
+				return "[附件: " + name + "]"
+			}
 		}
-		return "[文件]"
+		return fmt.Sprintf("[%d 个附件]", len(turn.fileInfos))
 	}
 	return "[空消息]"
+}
+
+func connectApprovalGroupReply(replier connectChatReplier, webhook, channel string) approvalReplier {
+	return func(ctx context.Context, _ string, text string) error {
+		if len([]rune(text)) > 200 {
+			return replier.SimpleReplyMarkdown(ctx, webhook, []byte(channel), []byte(text))
+		}
+		return replier.SimpleReplyText(ctx, webhook, []byte(text))
+	}
 }
 
 func runStreamConnector(ctx context.Context, channel, clientID, clientSecret string, fwd forwarder, cardCli *aiCardClient, extras *connectExtras) error {
@@ -1107,53 +1223,58 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 	health.start(ctx)
 
 	streamLoggerOnce.Do(func() { sdklogger.SetLogger(streamSDKLogger{}) })
-	replier := chatbot.NewChatbotReplier()
+	replier := newConnectChatReplier()
 	dedup := newMsgDedup(10000)
 	queue := newConvQueue()
 	// Media downloads need an authenticated API client even when cards are
 	// off (aiCardClient with an empty template is creds+HTTP only).
-	mediaCli := cardCli
-	if mediaCli == nil {
-		mediaCli = newAICardClient(clientID, clientSecret, "")
+	var mediaCli connectMediaClient
+	if cardCli != nil {
+		mediaCli = cardCli
+	} else {
+		mediaCli = newConnectMediaClient(clientID, clientSecret)
 	}
 
-	keepAlive := envDurationMS("DWS_CONNECT_KEEPALIVE_MS", 30000)
+	keepAlive := envDurationMS("DWS_CONNECT_KEEPALIVE_MS", 30*time.Second)
 	fmt.Fprintf(os.Stderr, "[connect] keepAlive=%s autoReconnect=true\n", keepAlive)
-	cli := client.NewStreamClient(
-		client.WithAppCredential(client.NewAppCredentialConfig(clientID, clientSecret)),
-		client.WithAutoReconnect(true),
-		client.WithKeepAlive(keepAlive),
-	)
+	cli := newConnectStreamClient(clientID, clientSecret, keepAlive)
 	cli.RegisterChatBotCallbackRouter(func(_ context.Context, data *chatbot.BotCallbackDataModel) ([]byte, error) {
 		text := strings.TrimSpace(data.Text.Content)
 		msgtype := strings.TrimSpace(data.Msgtype)
-		// Picture messages carry no text — their payload is a downloadCode
-		// resolved to a local file in the forward goroutine below.
-		picCode := ""
-		if strings.EqualFold(msgtype, "picture") {
-			picCode = pictureDownloadCode(data.Content)
-		}
-		// File callbacks come in two shapes: client-sent files carry a
-		// downloadCode; API-sent files (`dws chat message send --msg-type file
-		// --dentry-id --space-id`) carry dentryId + spaceId instead and have
-		// NO downloadCode. Both have to be recognisable or legit file messages
-		// get silently dropped below.
-		var fileInfo fileInboundInfo
-		if strings.EqualFold(msgtype, "file") {
-			fileInfo = parseFileInbound(data.Content)
+		// Discover attachments by their locator fields, never by a msgtype
+		// allowlist. msgtype is only a classification hint for the agent prompt.
+		picCodes, fileInfos, unrecoverableCount := callbackInboundMedia(msgtype, data.Content)
+		var chatRecordLookups []chatRecordLookup
+		if unrecoverableCount > 0 {
+			indexes := chatRecordUnknownIndexes(data.Content)
+			if strings.TrimSpace(data.MsgId) != "" && len(indexes) > 0 {
+				chatRecordLookups = append(chatRecordLookups, chatRecordLookup{
+					MsgID:          strings.TrimSpace(data.MsgId),
+					UnknownIndexes: indexes,
+				})
+				fmt.Fprintf(os.Stderr, "[connect][media] 转发记录中有 %d 条 unknownMsgType，将在 ACK 后补拉原始内容 (msgId=%s)\n", unrecoverableCount, data.MsgId)
+			} else {
+				fmt.Fprintf(os.Stderr, "[connect][media] 转发记录中有 %d 条 unknownMsgType，但缺少外层消息 ID，保留原始 JSON 降级处理\n", unrecoverableCount)
+			}
 		}
 		// Structured-text fallback: DingTalk leaves data.Text.Content blank on
 		// markdown / richText callbacks (the body ships in data.Content). Without
 		// this, `dws chat message send --group ... --text ...` — which defaults
 		// to msgType=markdown — hits the drop branch below and the bot looks
 		// dead to the sender.
-		if text == "" && picCode == "" {
+		if text == "" {
+			// Forwarded records must keep their complete JSON, even if the outer
+			// msgtype is renamed or a title-like field could be extracted as text.
+			// Detect the record by payload shape rather than message type.
+			if hasChatRecordPayload(data.Content) {
+				text = rawCallbackPrompt(msgtype, data.Content)
+			}
 			// interactiveCard (a bot @-mentioning this bot) nests the body in
 			// content.cardContent and carries the mention as its own leading
 			// leaf; the leaf-aware extractor drops it so the agent gets the
-			// clean instruction. Other structured-text shapes use the generic
-			// extractor.
-			if strings.EqualFold(msgtype, "interactiveCard") {
+			// clean instruction. Detection is based on the payload shape so a
+			// renamed/new type is handled identically.
+			if text == "" {
 				text = extractInteractiveCardText(data.Content)
 			}
 			if text == "" {
@@ -1161,13 +1282,15 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 					text = fallback
 				}
 			}
+			if text == "" {
+				text = rawCallbackPrompt(msgtype, data.Content)
+			}
 		}
-		if (text == "" && picCode == "" && !fileInfo.hasActionable()) || data.SessionWebhook == "" {
-			// Observability: silent drops are the #1 reason a working connector
-			// looks dead. Log msgtype + a payload summary so an unhandled shape
-			// (e.g. new-style file callback without downloadCode) shows up in
-			// stderr instead of being invisible.
-			fmt.Fprintf(os.Stderr, "[connect] 丢弃消息 msgtype=%q staffId=%s convId=%s msgId=%s content=%s (无正文/图片/可下载文件或 sessionWebhook 为空)\n",
+		if data.SessionWebhook == "" {
+			// A session webhook is required for the fallback reply path. Message
+			// payload shape is deliberately not filtered here: unknown and complex
+			// types are forwarded as raw JSON for the backend model to interpret.
+			fmt.Fprintf(os.Stderr, "[connect] 丢弃消息 msgtype=%q staffId=%s convId=%s msgId=%s content=%s (sessionWebhook 为空，无法回复)\n",
 				msgtype, data.SenderStaffId, data.ConversationId, data.MsgId, summarizeContent(data.Content))
 			return []byte(""), nil
 		}
@@ -1197,14 +1320,8 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 		if sender == "" {
 			sender = strings.TrimSpace(data.SenderStaffId)
 		}
-		shown := text
-		if shown == "" && picCode != "" {
-			shown = "[图片]"
-		} else if shown == "" && fileInfo.hasActionable() {
-			shown = "[文件: " + fileInfo.FileName + "]"
-		}
 		fmt.Fprintf(os.Stderr, "[connect] 收到 @%s: %s (convType=%s convId=%s staffId=%s msgId=%s)\n",
-			sender, truncateRunes(shown, 80), data.ConversationType, data.ConversationId, data.SenderStaffId, data.MsgId)
+			sender, truncateRunes(text, 80), data.ConversationType, data.ConversationId, data.SenderStaffId, data.MsgId)
 		health.onPush()
 		// Ack-first: return now, reply asynchronously via sessionWebhook (which is
 		// independent of the Stream ack). Use a background context so the in-flight
@@ -1218,29 +1335,34 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 		}
 		msgID := strings.TrimSpace(data.MsgId)
 		turn := connectQueuedTurn{
-			convID:           convID,
-			text:             text,
-			picCode:          picCode,
-			fileInfo:         fileInfo,
-			webhook:          webhook,
-			msgID:            msgID,
-			msgType:          msgtype,
-			senderStaffID:    strings.TrimSpace(data.SenderStaffId),
-			conversationID:   strings.TrimSpace(data.ConversationId),
-			conversationType: strings.TrimSpace(data.ConversationType),
-			callbackData:     *data,
+			convID:            convID,
+			text:              text,
+			picCodes:          picCodes,
+			fileInfos:         fileInfos,
+			chatRecordLookups: chatRecordLookups,
+			webhook:           webhook,
+			msgID:             msgID,
+			msgType:           msgtype,
+			senderStaffID:     strings.TrimSpace(data.SenderStaffId),
+			conversationID:    strings.TrimSpace(data.ConversationId),
+			conversationType:  strings.TrimSpace(data.ConversationType),
+			callbackData:      *data,
 		}
 		// Same-conversation agent calls never run in parallel; messages received
 		// while a turn is running are merged into one pending follow-up instead
 		// of forming an unbounded stale FIFO.
 		queue.submit(turn, func(turns []connectQueuedTurn) {
+			if extras.onTurnDone != nil {
+				defer extras.onTurnDone()
+			}
 			turn := mergeConnectQueuedTurns(turns)
 			if len(turns) > 1 {
 				fmt.Fprintf(os.Stderr, "[connect] 合并 %d 条待处理消息 (convId=%s, latestMsgId=%s)\n", len(turns), turn.convID, turn.msgID)
 			}
 			text := turn.text
-			picCode := turn.picCode
-			fileInfo := turn.fileInfo
+			picCodes := turn.picCodes
+			fileInfos := turn.fileInfos
+			chatRecordLookups := turn.chatRecordLookups
 			webhook := turn.webhook
 			convID := turn.convID
 			msgID := turn.msgID
@@ -1292,74 +1414,11 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 			started := time.Now()
 			// Assemble the forwarded prompt: resolve an attached picture (the
 			// top Q&A inbound is an error screenshot), then knowledge-augment.
-			prompt := text
-			if picCode != "" {
-				if localPath, derr := mediaCli.downloadMessageFile(context.Background(), clientID, picCode); derr != nil {
-					fmt.Fprintf(os.Stderr, "[connect][media] 图片下载失败: %v\n", derr)
-					if prompt == "" {
-						prompt = "（用户发来一张图片，但图片下载失败了。请告知用户图片没收到，建议补充文字描述。）"
-					}
-				} else if prompt == "" {
-					prompt = "用户发来一张图片（本地路径 " + localPath + "），请查看图片内容并回答其中的问题。"
-				} else {
-					prompt = prompt + "\n（用户同时附了一张图片，本地路径 " + localPath + "，请结合图片内容回答。）"
-				}
-			}
-			if fileInfo.hasActionable() {
-				fileName := fileInfo.FileName
-				var localPath string
-				var derr error
-				if fileInfo.DownloadCode != "" {
-					localPath, derr = mediaCli.downloadMessageFile(context.Background(), clientID, fileInfo.DownloadCode)
-					if derr != nil {
-						fmt.Fprintf(os.Stderr, "[connect][media] 文件下载失败: %v\n", derr)
-					}
-				}
-				switch {
-				case localPath != "":
-					if prompt == "" {
-						prompt = "用户发来一个文件「" + fileName + "」（本地路径 " + localPath + "），请读取文件内容并回答。"
-					} else {
-						prompt = prompt + "\n（用户同时附了一个文件「" + fileName + "」，本地路径 " + localPath + "，请结合文件内容回答。）"
-					}
-				case fileInfo.DentryID != 0 && fileInfo.SpaceID != 0:
-					// API-sent file: resolve via storage API (userId→unionId,
-					// then getDownloadInfo). Falls back to metadata-only prompt
-					// if the download chain fails (e.g. missing permissions).
-					senderID := strings.TrimSpace(callbackData.SenderStaffId)
-					if unionID, uerr := mediaCli.getUserUnionID(context.Background(), senderID); uerr != nil {
-						fmt.Fprintf(os.Stderr, "[connect][media] userId→unionId 失败 (%s): %v\n", senderID, uerr)
-					} else if dp, derr := mediaCli.downloadDentryFile(context.Background(), fileInfo.SpaceID, fileInfo.DentryID, unionID, fileName); derr != nil {
-						fmt.Fprintf(os.Stderr, "[connect][media] 钉盘文件下载失败 spaceId=%d dentryId=%d: %v\n", fileInfo.SpaceID, fileInfo.DentryID, derr)
-					} else {
-						localPath = dp
-					}
-					if localPath != "" {
-						if prompt == "" {
-							prompt = "用户发来一个文件「" + fileName + "」（本地路径 " + localPath + "），请读取文件内容并回答。"
-						} else {
-							prompt = prompt + "\n（用户同时附了一个文件「" + fileName + "」，本地路径 " + localPath + "，请结合文件内容回答。）"
-						}
-					} else {
-						meta := fmt.Sprintf("文件名「%s」，dentryId=%d，spaceId=%d", fileName, fileInfo.DentryID, fileInfo.SpaceID)
-						if fileInfo.FileType != "" {
-							meta += "，类型=" + fileInfo.FileType
-						}
-						if fileInfo.FileSize > 0 {
-							meta += fmt.Sprintf("，大小=%d 字节", fileInfo.FileSize)
-						}
-						if prompt == "" {
-							prompt = "用户发来一个文件（" + meta + "）。文件下载失败，请基于文件名与用户随附的文字信息回答，必要时请用户改用客户端上传或补充文字描述。"
-						} else {
-							prompt = prompt + "\n（用户同时附了一个文件：" + meta + "。文件下载失败，请结合文件名与随附文字回答。）"
-						}
-					}
-				default:
-					if prompt == "" {
-						prompt = "（用户发来一个文件「" + fileName + "」，但文件下载失败了。请告知用户文件没收到，建议重新发送。）"
-					}
-				}
-			}
+			prompt, attachments := assembleConnectTurnMedia(text, clientID, callbackData.SenderStaffId, mediaCli, picCodes, fileInfos, chatRecordLookups)
+			originalAttachments := append([]connectMediaAttachment(nil), attachments...)
+			defer cleanupConnectMediaAttachments(originalAttachments)
+			prompt, attachments = prepareConnectForwarderAttachments(fwd, prompt, attachments)
+			defer cleanupConnectMediaAttachments(attachments)
 			if extras.kb != nil {
 				prompt = extras.kb.augment(prompt)
 			}
@@ -1417,13 +1476,7 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 				}
 			}
 
-			var reply string
-			var err error
-			if streamable {
-				reply, err = sf.forwardStream(context.Background(), convID, prompt, onDelta)
-			} else {
-				reply, err = fwd.forward(context.Background(), convID, prompt)
-			}
+			reply, err := forwardConnectTurn(context.Background(), fwd, convID, prompt, attachments, onDelta)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[connect] 转发失败 (%s, 耗时 %s): %v\n", channel, time.Since(started).Round(time.Millisecond), err)
 				if errors.Is(err, context.DeadlineExceeded) {
@@ -1448,12 +1501,7 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 			// posts the outcome into the group itself. handled==true means the
 			// gate owns the reply and the normal delivery below is skipped.
 			if err == nil && gateOn {
-				groupReply := func(ctx context.Context, _, text string) error {
-					if len([]rune(text)) > 200 {
-						return replier.SimpleReplyMarkdown(ctx, webhook, []byte(channel), []byte(text))
-					}
-					return replier.SimpleReplyText(ctx, webhook, []byte(text))
-				}
+				groupReply := connectApprovalGroupReply(replier, webhook, channel)
 				out, handled := extras.approval.handleReply(context.Background(), strings.TrimSpace(callbackData.SenderStaffId), convID, reply, groupReply)
 				if handled {
 					if thinking {
@@ -1486,7 +1534,9 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 						// Client-side fetch of a fresh card occasionally misses
 						// the burst and shows "内容加载失败"; a delayed repair
 						// frame triggers a re-render.
-						go cardCli.repair(context.Background(), cardInst, reply)
+						runConnectCardRepair(func() {
+							cardCli.repair(context.Background(), cardInst, reply)
+						})
 					}
 				}
 			}
@@ -1509,7 +1559,7 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 					if attempt < len(backoffs) {
 						fmt.Fprintf(os.Stderr, "[connect] 普通消息发送失败 (%s, attempt %d/%d, msgId=%s): %v，%v 后重试\n",
 							channel, attempt+1, len(backoffs)+1, msgID, sendErr, backoffs[attempt])
-						time.Sleep(backoffs[attempt])
+						helperSleep(backoffs[attempt])
 					}
 				}
 				if sendErr != nil {
@@ -1549,6 +1599,10 @@ func runStreamConnector(ctx context.Context, channel, clientID, clientSecret str
 	health.onConnected()
 	<-ctx.Done()
 	return nil
+}
+
+var runConnectCardRepair = func(repair func()) {
+	go repair()
 }
 
 // envOr returns the non-empty value of env var key, otherwise def.

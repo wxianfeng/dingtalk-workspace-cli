@@ -30,12 +30,14 @@ import (
 	"time"
 
 	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cli"
 	dwsevent "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/bus"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/busctl"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/consume"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/personal"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/source"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/event/transport"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/config"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
@@ -68,6 +70,7 @@ type personalConsumeOptions struct {
 	TTL              time.Duration
 	Ephemeral        bool
 	UserID           string
+	OpenDingTalkID   string
 	GroupID          string
 	ControlBaseURL   string
 	StreamTicketMode string
@@ -106,6 +109,33 @@ type personalStreamSourceOptions struct {
 	ClientIDOverride string
 }
 
+var (
+	personalResolveEventIdentity        = resolvePersonalEventIdentity
+	personalEnsureSubscription          = ensurePersonalSubscription
+	personalGetSubscription             = (*personal.Client).GetSubscription
+	personalCreateSubscription          = (*personal.Client).CreateSubscription
+	personalDeleteSubscription          = (*personal.Client).DeleteSubscription
+	personalListSubscriptions           = (*personal.Client).ListSubscriptions
+	personalUpsertRunState              = personal.UpsertRunState
+	personalRemoveRunStates             = personal.RemoveRunStates
+	personalLoadRunStates               = personal.LoadRunStates
+	personalConsumeRun                  = consume.Run
+	personalValidateConsumeConfig       = consume.ValidateConfig
+	personalValidateNoOutputConflict    = consume.ValidateNoOutputConflict
+	personalNewStreamSource             = newPersonalStreamSource
+	personalBusRun                      = bus.Run
+	personalFindBusByIdentity           = busctl.FindBusByIdentity
+	personalQueryEntry                  = busctl.QueryEntry
+	personalQueryStatus                 = busctl.QueryStatus
+	personalStopBus                     = busctl.Stop
+	personalFindProcess                 = os.FindProcess
+	personalSignalProcess               = (*os.Process).Signal
+	personalResolveAuxiliaryAccessToken = ResolveAuxiliaryAccessToken
+	personalLoadTokenData               = authpkg.LoadTokenData
+	personalClientID                    = authpkg.ClientID
+	personalResolveAppCredentialsStrict = authpkg.ResolveAppCredentialsStrict
+)
+
 func newEventSchemaCommand() *cobra.Command {
 	var asIdentity string
 	var formatRaw string
@@ -115,12 +145,9 @@ func newEventSchemaCommand() *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		DisableAutoGenTag: true,
 		RunE: func(c *cobra.Command, args []string) error {
-			as, err := normalizeEventAs(asIdentity)
+			_, err := normalizeEventAs(asIdentity)
 			if err != nil {
 				return err
-			}
-			if as != "user" {
-				return fmt.Errorf("event schema is only supported with --as user")
 			}
 			def, ok := personal.Lookup(args[0])
 			if !ok {
@@ -135,6 +162,13 @@ func newEventSchemaCommand() *cobra.Command {
 	cmd.Flags().StringVar(&asIdentity, "as", "user", "事件身份: user")
 	cmd.Flags().StringVarP(&formatRaw, "format", "f", "json", "输出格式: json")
 	hideEventInternalFlags(cmd, "as")
+	cli.AnnotateRuntimePositionals(cmd, cli.RuntimeSchemaPositional{
+		Name:        "event_key",
+		Type:        "string",
+		Description: "要查询 payload 字段定义的个人事件码",
+		Required:    true,
+		Index:       0,
+	})
 	return cmd
 }
 
@@ -173,7 +207,7 @@ func runPersonalEventConsume(c *cobra.Command, opts personalConsumeOptions) erro
 		return err
 	}
 	configDir := defaultConfigDir()
-	identity, err := resolvePersonalEventIdentity(ctx, configDir, opts.StreamSourceID)
+	identity, err := personalResolveEventIdentity(ctx, configDir, opts.StreamSourceID)
 	if err != nil {
 		return fmt.Errorf("event consume --as user: %w", err)
 	}
@@ -194,8 +228,14 @@ func runPersonalEventConsume(c *cobra.Command, opts personalConsumeOptions) erro
 	if fellback && !opts.Common.Quiet {
 		fmt.Fprintf(c.ErrOrStderr(), "WARN: --format %q has no meaning for event stream; using ndjson\n", rawFormat)
 	}
+	projector := personalEventProjector(opts.DebugRawEvents)
 
 	if opts.Common.DryRun {
+		if strings.TrimSpace(opts.SubscribeID) == "" {
+			if err := validatePersonalSubscriptionOptions(opts); err != nil {
+				return fmt.Errorf("event consume --as user: %w", err)
+			}
+		}
 		cfg := consume.Config{
 			WorkDir:        workDir,
 			IPCEndpoint:    ipcEndpoint,
@@ -204,9 +244,11 @@ func runPersonalEventConsume(c *cobra.Command, opts personalConsumeOptions) erro
 			Compact:        opts.Common.Compact,
 			MaxEvents:      opts.Common.MaxEvents,
 			Duration:       opts.Common.Duration,
+			EventKey:       opts.EventKey,
 			Format:         normalised,
 			OutputDir:      opts.Common.OutputDir,
 			Routes:         routes,
+			Projector:      projector,
 			Stderr:         c.ErrOrStderr(),
 			Quiet:          opts.Common.Quiet,
 			Foreground:     opts.Common.Foreground,
@@ -214,18 +256,18 @@ func runPersonalEventConsume(c *cobra.Command, opts personalConsumeOptions) erro
 			DryRun:         true,
 		}
 		applyPersonalConsumeFilters(&cfg, opts, strings.TrimSpace(opts.SubscribeID), opts.EventKey)
-		return consume.Run(ctx, cfg)
+		return personalConsumeRun(ctx, cfg)
 	}
 
-	client := personal.NewClient(personalEventControlBaseURL(opts.ControlBaseURL, configDir), identity)
-	sub, eventKey, ruleType, err := ensurePersonalSubscription(ctx, client, identity, opts)
+	client := newPersonalEventControlClient(configDir, personalEventControlBaseURL(opts.ControlBaseURL, configDir), identity)
+	sub, eventKey, ruleType, err := personalEnsureSubscription(ctx, client, identity, opts)
 	if err != nil {
 		return fmt.Errorf("event consume --as user: %w", err)
 	}
 	if sub.SubscribeID == "" {
 		return fmt.Errorf("event consume --as user: server returned empty subscribe_id")
 	}
-	if err := personal.UpsertRunState(workDir, personal.RunState{
+	if err := personalUpsertRunState(workDir, personal.RunState{
 		SubscribeID:  sub.SubscribeID,
 		EventKey:     eventKey,
 		RuleType:     ruleType,
@@ -236,45 +278,58 @@ func runPersonalEventConsume(c *cobra.Command, opts personalConsumeOptions) erro
 		return fmt.Errorf("event consume --as user: save run state: %w", err)
 	}
 	cleanup := func() {
-		_ = client.DeleteSubscription(context.Background(), sub.SubscribeID)
-		_ = personal.RemoveRunStates(workDir, []string{sub.SubscribeID})
+		_ = personalDeleteSubscription(client, context.Background(), sub.SubscribeID)
+		_ = personalRemoveRunStates(workDir, []string{sub.SubscribeID})
 	}
-	if opts.Ephemeral {
+	// Ownership-based cleanup: a subscription this run CREATED is
+	// unsubscribed on exit
+	// (any exit — SIGTERM / stdin-EOF / limit / timeout / error), so nothing
+	// leaks server-side. A subscription REUSED via --subscribe-id is left
+	// intact — the caller owns its lifecycle. --ephemeral forces cleanup
+	// either way.
+	selfCreated := strings.TrimSpace(opts.SubscribeID) == ""
+	if opts.Ephemeral || selfCreated {
 		defer cleanup()
 	}
 
 	cfg := consume.Config{
-		WorkDir:        workDir,
-		IPCEndpoint:    ipcEndpoint,
-		ClientID:       identity.ClientID,
-		SpawnExtraArgs: personalBusSpawnArgs(identity, opts.StreamTicketMode, opts.StreamTicketURL),
-		Compact:        opts.Common.Compact,
-		MaxEvents:      opts.Common.MaxEvents,
-		Duration:       opts.Common.Duration,
-		Format:         normalised,
-		OutputDir:      opts.Common.OutputDir,
-		Routes:         routes,
-		Stdout:         c.OutOrStdout(),
-		Stderr:         c.ErrOrStderr(),
-		Quiet:          opts.Common.Quiet,
-		Foreground:     opts.Common.Foreground,
-		Force:          opts.Common.Force,
+		WorkDir:          workDir,
+		IPCEndpoint:      ipcEndpoint,
+		ClientID:         identity.ClientID,
+		SpawnExtraArgs:   personalBusSpawnArgs(identity, opts.StreamTicketMode, opts.StreamTicketURL),
+		Compact:          opts.Common.Compact,
+		MaxEvents:        opts.Common.MaxEvents,
+		Duration:         opts.Common.Duration,
+		EventKey:         eventKey,
+		Format:           normalised,
+		OutputDir:        opts.Common.OutputDir,
+		Routes:           routes,
+		Projector:        projector,
+		ReadySubscribeID: sub.SubscribeID,
+		Stdout:           c.OutOrStdout(),
+		Stderr:           c.ErrOrStderr(),
+		Quiet:            opts.Common.Quiet,
+		Foreground:       opts.Common.Foreground,
+		Force:            opts.Common.Force,
 	}
+	// Arm the stdin-EOF shutdown watcher only for a pipe-style, unbounded
+	// run (see shouldWatchStdinEOF).
+	applyEventConsumeStdin(&cfg, opts.Common.MaxEvents, opts.Common.Duration, c.InOrStdin())
 	applyPersonalConsumeFilters(&cfg, opts, sub.SubscribeID, eventKey)
 	if opts.DebugRawEvents && !opts.Common.Quiet {
 		fmt.Fprintf(c.ErrOrStderr(), "debug raw events enabled: local event filters disabled\nworkdir: %s\nbus_log: %s\n",
 			workDir, filepath.Join(workDir, "bus.log"))
 	}
-	if err := consume.ValidateConfig(cfg); err != nil {
+	if err := personalValidateConsumeConfig(cfg); err != nil {
 		return err
 	}
 	if o := c.Flags().Lookup("output"); o != nil && o.Changed {
-		if err := consume.ValidateNoOutputConflict(cfg, o.Value.String()); err != nil {
+		if err := personalValidateNoOutputConflict(cfg, o.Value.String()); err != nil {
 			return err
 		}
 	}
 	if opts.Common.Foreground {
-		src, err := newPersonalStreamSource(ctx, personalStreamSourceOptions{
+		src, err := personalNewStreamSource(ctx, personalStreamSourceOptions{
 			ConfigDir:  configDir,
 			Identity:   identity,
 			TicketMode: opts.StreamTicketMode,
@@ -297,17 +352,24 @@ func runPersonalEventConsume(c *cobra.Command, opts personalConsumeOptions) erro
 			Source:       src,
 		}
 		bus.ApplyEnvTuning(&busCfg)
-		err = bus.Run(ctx, busCfg)
+		err = personalBusRun(ctx, busCfg)
 		if err != nil && !opts.Ephemeral {
 			cleanup()
 		}
 		return err
 	}
-	err = consume.Run(ctx, cfg)
+	err = personalConsumeRun(ctx, cfg)
 	if err != nil && !opts.Ephemeral {
 		cleanup()
 	}
 	return err
+}
+
+func personalEventProjector(debugRawEvents bool) consume.Projector {
+	if debugRawEvents {
+		return func(ev transport.Event) (any, error) { return ev, nil }
+	}
+	return personal.ProjectOutput
 }
 
 func applyPersonalConsumeFilters(cfg *consume.Config, opts personalConsumeOptions, subscribeID, eventKey string) {
@@ -325,9 +387,22 @@ func applyPersonalConsumeFilters(cfg *consume.Config, opts personalConsumeOption
 	cfg.SubscribeID = strings.TrimSpace(subscribeID)
 }
 
+func validatePersonalSubscriptionOptions(opts personalConsumeOptions) error {
+	if _, _, err := personal.BuildRuleParam(opts.EventKey, personal.RuleOptions{
+		RuleType:       opts.Rule,
+		UserID:         opts.UserID,
+		OpenDingTalkID: opts.OpenDingTalkID,
+		GroupID:        opts.GroupID,
+	}); err != nil {
+		return err
+	}
+	_, _, err := personal.BuildFilter(opts.FilterJSON, opts.QueryCSV)
+	return err
+}
+
 func ensurePersonalSubscription(ctx context.Context, client *personal.Client, identity personal.Identity, opts personalConsumeOptions) (*personal.Subscription, string, string, error) {
 	if strings.TrimSpace(opts.SubscribeID) != "" {
-		sub, err := client.GetSubscription(ctx, opts.SubscribeID)
+		sub, err := personalGetSubscription(client, ctx, opts.SubscribeID)
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -354,9 +429,10 @@ func ensurePersonalSubscription(ctx context.Context, client *personal.Client, id
 		return nil, "", "", err
 	}
 	ruleType, ruleParam, err := personal.BuildRuleParam(opts.EventKey, personal.RuleOptions{
-		RuleType: opts.Rule,
-		UserID:   opts.UserID,
-		GroupID:  opts.GroupID,
+		RuleType:       opts.Rule,
+		UserID:         opts.UserID,
+		OpenDingTalkID: opts.OpenDingTalkID,
+		GroupID:        opts.GroupID,
 	})
 	if err != nil {
 		return nil, "", "", err
@@ -377,7 +453,7 @@ func ensurePersonalSubscription(ctx context.Context, client *personal.Client, id
 	if opts.TTL > 0 {
 		req.TTLSeconds = int64(opts.TTL.Seconds())
 	}
-	sub, err := client.CreateSubscription(ctx, req)
+	sub, err := personalCreateSubscription(client, ctx, req)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -390,17 +466,17 @@ func runPersonalEventStatus(c *cobra.Command, opts personalStatusOptions) error 
 		return err
 	}
 	configDir := defaultConfigDir()
-	identity, err := resolvePersonalEventIdentity(ctx, configDir, opts.StreamSourceID)
+	identity, err := personalResolveEventIdentity(ctx, configDir, opts.StreamSourceID)
 	if err != nil {
 		return fmt.Errorf("event status --as user: %w", err)
 	}
 	identityHash := dwsevent.IdentityHash(identity.Key())
 	editionName := editionNameOrDefault()
 	workDir := eventWorkDir(configDir, editionName, dwsevent.SourceKindPersonalStream, identityHash)
-	entry := busctl.FindBusByIdentity(configDir, editionName, dwsevent.SourceKindPersonalStream, identityHash)
+	entry := personalFindBusByIdentity(configDir, editionName, dwsevent.SourceKindPersonalStream, identityHash)
 	var qs busctl.EntryStatus
 	if entry != nil {
-		qs = busctl.QueryEntry(*entry)
+		qs = personalQueryEntry(*entry)
 	} else {
 		qs = busctl.EntryStatus{Entry: busctl.BusEntry{
 			WorkDir:      workDir,
@@ -422,7 +498,7 @@ func runPersonalEventStatus(c *cobra.Command, opts personalStatusOptions) error 
 	if status == "" || status == "all" {
 		status = ""
 	}
-	subs, err := personal.NewClient(personalEventControlBaseURL(opts.ControlBaseURL, configDir), identity).ListSubscriptions(ctx, personal.ListOptions{
+	subs, err := personalListSubscriptions(newPersonalEventControlClient(configDir, personalEventControlBaseURL(opts.ControlBaseURL, configDir), identity), ctx, personal.ListOptions{
 		Status:      status,
 		EventKey:    opts.EventKey,
 		SubscribeID: opts.SubscribeID,
@@ -525,7 +601,7 @@ func runPersonalEventStop(c *cobra.Command, opts personalStopOptions) error {
 	}
 
 	configDir := defaultConfigDir()
-	identity, err := resolvePersonalEventIdentity(ctx, configDir, opts.StreamSourceID)
+	identity, err := personalResolveEventIdentity(ctx, configDir, opts.StreamSourceID)
 	if err != nil {
 		return fmt.Errorf("event stop --as user: %w", err)
 	}
@@ -537,20 +613,20 @@ func runPersonalEventStop(c *cobra.Command, opts personalStopOptions) error {
 	if err != nil {
 		return fmt.Errorf("event stop --as user: %w", err)
 	}
-	client := personal.NewClient(personalEventControlBaseURL(opts.ControlBaseURL, configDir), identity)
+	client := newPersonalEventControlClient(configDir, personalEventControlBaseURL(opts.ControlBaseURL, configDir), identity)
 	for _, id := range subscribeIDs {
-		if err := client.DeleteSubscription(ctx, id); err != nil {
+		if err := personalDeleteSubscription(client, ctx, id); err != nil {
 			return fmt.Errorf("event stop --as user: cancel subscription %s: %w", id, err)
 		}
 	}
-	if err := personal.RemoveRunStates(workDir, subscribeIDs); err != nil {
+	if err := personalRemoveRunStates(workDir, subscribeIDs); err != nil {
 		return fmt.Errorf("event stop --as user: update local state: %w", err)
 	}
 	if err := interruptPersonalConsumers(ipcEndpoint, subscribeIDs); err != nil {
 		fmt.Fprintf(c.ErrOrStderr(), "WARN: failed to stop matching local consume process: %v\n", err)
 	}
 
-	remaining, err := personal.LoadRunStates(workDir)
+	remaining, err := personalLoadRunStates(workDir)
 	if err != nil {
 		return fmt.Errorf("event stop --as user: load remaining local state: %w", err)
 	}
@@ -560,7 +636,7 @@ func runPersonalEventStop(c *cobra.Command, opts personalStopOptions) error {
 	}
 
 	busState := "personal bus stopped"
-	if err := busctl.Stop(busctl.StopConfig{WorkDir: workDir}); err != nil {
+	if err := personalStopBus(busctl.StopConfig{WorkDir: workDir}); err != nil {
 		if errors.Is(err, busctl.ErrNotRunning) {
 			busState = "personal bus is not running"
 		} else {
@@ -582,7 +658,7 @@ func personalStopTargets(workDir, explicit string, all bool) ([]string, error) {
 	if !all {
 		return nil, fmt.Errorf("subscribe_id is required unless --all is set")
 	}
-	states, err := personal.LoadRunStates(workDir)
+	states, err := personalLoadRunStates(workDir)
 	if err != nil {
 		return nil, err
 	}
@@ -607,7 +683,7 @@ func interruptPersonalConsumers(ipcEndpoint string, subscribeIDs []string) error
 	if ipcEndpoint == "" || len(targets) == 0 {
 		return nil
 	}
-	status, err := busctl.QueryStatus(ipcEndpoint)
+	status, err := personalQueryStatus(ipcEndpoint)
 	if err != nil {
 		return nil
 	}
@@ -622,11 +698,11 @@ func interruptPersonalConsumers(ipcEndpoint string, subscribeIDs []string) error
 		if _, ok := signalled[consumer.PID]; ok {
 			continue
 		}
-		proc, err := os.FindProcess(consumer.PID)
+		proc, err := personalFindProcess(consumer.PID)
 		if err != nil {
 			return fmt.Errorf("find consume pid=%d: %w", consumer.PID, err)
 		}
-		if err := proc.Signal(os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if err := personalSignalProcess(proc, os.Interrupt); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return fmt.Errorf("signal consume pid=%d: %w", consumer.PID, err)
 		}
 		signalled[consumer.PID] = struct{}{}
@@ -643,11 +719,14 @@ func printPersonalStopResult(w io.Writer, subscribeIDs []string, single bool, bu
 }
 
 func resolvePersonalEventIdentity(ctx context.Context, configDir string, sourceIDOverride string) (personal.Identity, error) {
-	accessToken, err := ResolveAuxiliaryAccessToken(ctx, configDir, "")
+	accessToken, err := personalResolveAuxiliaryAccessToken(ctx, configDir, "")
 	if err != nil {
 		return personal.Identity{}, err
 	}
-	tokenData, _ := authpkg.LoadTokenData(configDir)
+	tokenData, err := personalLoadTokenData(configDir)
+	if err != nil && !errors.Is(err, authpkg.ErrTokenDataNotFound) {
+		return personal.Identity{}, fmt.Errorf("load OAuth identity metadata: %w", err)
+	}
 	var corpID, userID, clientID, refreshToken string
 	if tokenData != nil {
 		corpID = tokenData.CorpID
@@ -662,10 +741,10 @@ func resolvePersonalEventIdentity(ctx context.Context, configDir string, sourceI
 		userID = resolveRuntimeDefault(ctx, "$currentUserId")
 	}
 	if clientID == "" {
-		clientID = authpkg.ClientID()
+		clientID = personalClientID()
 	}
 	if clientID == "" {
-		if id, _, _, _, err := authpkg.ResolveAppCredentialsStrict(configDir); err == nil {
+		if id, _, _, _, err := personalResolveAppCredentialsStrict(configDir); err == nil {
 			clientID = id
 		}
 	}
@@ -691,6 +770,15 @@ func resolvePersonalEventIdentity(ctx context.Context, configDir string, sourceI
 		ClientID:     clientID,
 		SourceID:     sourceID,
 	}, nil
+}
+
+func newPersonalEventControlClient(configDir, baseURL string, identity personal.Identity) *personal.Client {
+	identity.AccessToken = ""
+	client := personal.NewClient(baseURL, identity)
+	client.AccessTokenProvider = func(ctx context.Context) (string, error) {
+		return personalResolveAuxiliaryAccessToken(ctx, configDir, "")
+	}
+	return client
 }
 
 func personalTokenSubject(kind, token string) string {
@@ -728,7 +816,7 @@ func newPersonalStreamSource(ctx context.Context, opts personalStreamSourceOptio
 	clientID := opts.Identity.ClientID
 	clientSecret := ""
 	if mode == "custom" {
-		resolvedID, secret, _, _, err := authpkg.ResolveAppCredentialsStrict(opts.ConfigDir)
+		resolvedID, secret, _, _, err := personalResolveAppCredentialsStrict(opts.ConfigDir)
 		if err != nil {
 			return nil, err
 		}
@@ -739,24 +827,20 @@ func newPersonalStreamSource(ctx context.Context, opts personalStreamSourceOptio
 		}
 		clientSecret = secret
 	}
-	configDir := opts.ConfigDir
-	tokenProvider := func(pctx context.Context) (string, error) {
-		return ResolveAuxiliaryAccessToken(pctx, configDir, "")
-	}
-	forceRefresh := func(pctx context.Context) (string, error) {
-		return ForceRefreshAccessToken(pctx, configDir)
-	}
 	_ = ctx
 	return source.NewPersonal(source.PersonalConfig{
-		AccessToken:         opts.Identity.AccessToken,
-		AccessTokenProvider: tokenProvider,
-		ForceRefreshToken:   forceRefresh,
-		ClientID:            clientID,
-		ClientSecret:        clientSecret,
-		SourceID:            opts.Identity.SourceID,
-		TicketURL:           ticketURL,
-		TicketMode:          mode,
-		HTTPClient:          &http.Client{Timeout: 30 * time.Second},
+		AccessTokenProvider: func(ctx context.Context) (string, error) {
+			return personalResolveAuxiliaryAccessToken(ctx, opts.ConfigDir, "")
+		},
+		RefreshRejectedToken: func(ctx context.Context, rejectedToken string) (string, error) {
+			return forceRefreshRejectedAccessToken(ctx, opts.ConfigDir, rejectedToken)
+		},
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		SourceID:     opts.Identity.SourceID,
+		TicketURL:    ticketURL,
+		TicketMode:   mode,
+		HTTPClient:   &http.Client{Timeout: 30 * time.Second},
 	})
 }
 
@@ -764,6 +848,15 @@ func personalBusSpawnArgs(identity personal.Identity, ticketMode, ticketURL stri
 	args := []string{
 		"--source-kind", string(dwsevent.SourceKindPersonalStream),
 		"--stream-source-id", identity.SourceID,
+	}
+	// Forward the exact account so the detached _bus child resolves the same
+	// credentials as the parent, including when one organization has multiple
+	// logged-in users.
+	if cid := strings.TrimSpace(identity.CorpID); cid != "" {
+		args = append(args, "--profile", authpkg.ProfileSelector(authpkg.Profile{
+			CorpID: identity.CorpID,
+			UserID: identity.UserID,
+		}))
 	}
 	if strings.TrimSpace(ticketMode) != "" {
 		args = append(args, "--stream-ticket-mode", ticketMode)
@@ -829,10 +922,7 @@ func personalEventStreamSourceID(raw string) string {
 	if v := strings.TrimSpace(raw); v != "" {
 		return v
 	}
-	if v := strings.TrimSpace(edition.PersonalEventSourceID()); v != "" {
-		return v
-	}
-	return "open"
+	return strings.TrimSpace(edition.PersonalEventSourceID())
 }
 
 func personalEventMCPBaseURL(configDir string) string {

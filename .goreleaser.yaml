@@ -1,18 +1,13 @@
 # GoReleaser configuration for dws
 # Docs: https://goreleaser.com
 #
-# To release:
-#   git tag -a v0.1.0 -m "Release v0.1.0"
-#   git push origin v0.1.0
+# To release, use scripts/release/release.sh. It seals main, validates the
+# CHANGELOG and packages, then pushes the annotated tag for CI/CD to publish.
 #
 # To test locally (no publish):
 #   goreleaser release --snapshot --clean
 
 version: 2
-
-before:
-  hooks:
-    - go mod tidy
 
 builds:
   - main: ./cmd
@@ -67,7 +62,9 @@ release:
     # 用当前运行 CI 的仓库 owner: fork CI 发到 fork, 官方 CI 发到官方, 两边都对
     owner: "{{ .Env.GITHUB_REPOSITORY_OWNER }}"
     name: dingtalk-workspace-cli
-  draft: false
+  # Keep the release private until post-processing has replaced the Darwin
+  # archives and verified every finalized asset digest.
+  draft: true
   prerelease: auto
   name_template: "v{{.Version}}"
   mode: replace

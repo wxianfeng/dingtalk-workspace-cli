@@ -44,6 +44,11 @@ func newSheetCommand() *cobra.Command {
   dws sheet find                                在工作表中搜索单元格内容
   dws sheet append                              在工作表末尾追加数据
   dws sheet csv-put                             将 CSV 数据写入表格指定位置
+  dws sheet table-get                          读取结构化 table 数据
+  dws sheet table-put                          写入结构化 table 数据
+  dws sheet pivot-table [list|create|update|delete]  透视表管理
+  dws sheet show-gridline                      显示工作表网格线
+  dws sheet hide-gridline                      隐藏工作表网格线
   dws sheet merge-cells                         合并单元格
   dws sheet insert-dimension                    在指定位置插入行或列
   dws sheet delete-dimension                    删除指定位置的行或列
@@ -88,6 +93,7 @@ func newSheetCommand() *cobra.Command {
   dws sheet chart update                         更新浮动图表
   dws sheet chart delete                         删除浮动图表
   dws sheet export                              导出表格为 xlsx（异步任务一站式：提交→轮询→可选下载）
+  dws sheet import                              导入 xlsx/xls 为在线电子表格
   dws sheet template list                       获取表格模板列表
   dws sheet template search                     搜索表格模板
   dws sheet template apply                      应用表格模板创建新表格文档`,
@@ -105,7 +111,10 @@ func newSheetCommand() *cobra.Command {
 	floatImageCmds := newFloatImageCmds()
 	chartCmd := newChartCmd()
 	exportCmd := newExportCmd()
+	importCmd := newSheetImportCmd()
 	templateCmd := newSheetTemplateCmd()
+	tableCmds := newTableCmds()
+	pivotTableCmd := newPivotTableCmd()
 
 	batchUpdateCmd := newBatchUpdateCmd()
 	rangeBatchClearCmd := newRangeBatchClearCmd()
@@ -126,7 +135,8 @@ func newSheetCommand() *cobra.Command {
 	standaloneCmds = append(standaloneCmds, dimensionCmds...)
 	standaloneCmds = append(standaloneCmds, mediaCmds...)
 	standaloneCmds = append(standaloneCmds, floatImageCmds...)
-	standaloneCmds = append(standaloneCmds, exportCmd, batchUpdateCmd)
+	standaloneCmds = append(standaloneCmds, tableCmds...)
+	standaloneCmds = append(standaloneCmds, exportCmd, importCmd, batchUpdateCmd)
 
 	// Register cross-product aliases
 	for _, cmd := range standaloneCmds {
@@ -140,7 +150,35 @@ func newSheetCommand() *cobra.Command {
 
 	// Add all to root
 	root.AddCommand(standaloneCmds...)
-	root.AddCommand(rangeCmd, filterCmd, filterViewCmd, condFormatCmd, chartCmd, templateCmd)
+	root.AddCommand(rangeCmd, filterCmd, filterViewCmd, condFormatCmd, chartCmd, templateCmd, pivotTableCmd)
+
+	// This is the reviewed runtime counterpart of the final Sheet Schema
+	// confirmation=user_required set. It is intentionally command-local: there
+	// is no Cobra-wide or Schema-driven interceptor. The app-level delivery gate
+	// verifies this exact protected set against the final typed SchemaRegistry.
+	confirmationGuards := []struct {
+		path       string
+		operation  string
+		targetHint string
+	}{
+		{path: "batch-update", operation: "批量更新", targetHint: "文档、子操作及影响范围"},
+		{path: "chart delete", operation: "删除浮动图表", targetHint: "文档、工作表和图表"},
+		{path: "range clear", operation: "清除工作表区域", targetHint: "工作表、清除范围和清除类型"},
+		{path: "cond-format delete", operation: "删除条件格式规则", targetHint: "文档、工作表和规则"},
+		{path: "delete-dimension", operation: "删除行或列", targetHint: "工作表、维度、起始位置和数量"},
+		{path: "delete-dropdown", operation: "删除下拉列表", targetHint: "工作表和单元格范围"},
+		{path: "filter delete", operation: "删除全局筛选", targetHint: "文档和工作表"},
+		{path: "filter-view delete", operation: "删除筛选视图", targetHint: "文档、工作表和筛选视图"},
+		{path: "delete-float-image", operation: "删除浮动图片", targetHint: "文档、工作表和浮动图片"},
+		{path: "pivot-table delete", operation: "删除透视表", targetHint: "文档、工作表和透视表"},
+		{path: "delete-sheet", operation: "删除工作表", targetHint: "文档和工作表"},
+		{path: "filter-view delete-criteria", operation: "删除筛选视图列条件", targetHint: "文档、工作表、筛选视图和列"},
+		{path: "range batch-clear", operation: "批量清除工作表区域", targetHint: "文档、工作表、清除范围和清除类型"},
+		{path: "range move-to", operation: "移动工作表区域", targetHint: "源工作表范围和目标位置"},
+	}
+	for _, guard := range confirmationGuards {
+		attachSheetConfirmationGuard(root, guard.path, guard.operation, guard.targetHint)
+	}
 
 	// Guards for grouped parent commands
 	attachUnknownSubcommandGuard(root)
@@ -149,8 +187,17 @@ func newSheetCommand() *cobra.Command {
 	attachUnknownSubcommandGuard(filterViewCmd)
 	attachUnknownSubcommandGuard(condFormatCmd)
 	attachUnknownSubcommandGuard(chartCmd)
+	attachUnknownSubcommandGuard(pivotTableCmd)
 
 	return root
+}
+
+func attachSheetConfirmationGuard(root *cobra.Command, path, operation, targetHint string) {
+	command, remaining, err := root.Find(strings.Fields(path))
+	if err != nil || command == nil || len(remaining) != 0 || command == root {
+		panic(fmt.Sprintf("attach Sheet confirmation guard %q: command not found (remaining=%v, err=%v)", path, remaining, err))
+	}
+	protectSheetMutationCommand(command, operation, targetHint)
 }
 
 // attachUnknownSubcommandGuard 为分组型命令挂上拼错子命令时的 did-you-mean 提示。

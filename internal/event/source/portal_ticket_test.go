@@ -22,7 +22,7 @@ import (
 	"testing"
 )
 
-func TestPortalTicket401ForceRefreshRetry(t *testing.T) {
+func TestPortalTicket401RejectedTokenRefreshRetry(t *testing.T) {
 	var ticketCalls atomic.Int32
 	var forceRefreshCalls atomic.Int32
 	currentToken := "old-token"
@@ -57,7 +57,10 @@ func TestPortalTicket401ForceRefreshRetry(t *testing.T) {
 		AccessTokenProvider: func(context.Context) (string, error) {
 			return currentToken, nil
 		},
-		ForceRefreshToken: func(context.Context) (string, error) {
+		RefreshRejectedToken: func(_ context.Context, rejected string) (string, error) {
+			if rejected != "old-token" {
+				t.Fatalf("rejected token = %q, want old-token", rejected)
+			}
 			forceRefreshCalls.Add(1)
 			currentToken = "new-token"
 			return "new-token", nil
@@ -67,13 +70,13 @@ func TestPortalTicket401ForceRefreshRetry(t *testing.T) {
 		HTTPClient: srv.Client(),
 	}
 
-	// First call: should get 401 and trigger ForceRefreshToken
+	// First call: should get 401 and refresh the rejected token.
 	_, err := requestPortalTicket(context.Background(), cfg)
 	if err == nil {
 		t.Fatal("first requestPortalTicket() should return error on 401")
 	}
 	if got := forceRefreshCalls.Load(); got != 1 {
-		t.Fatalf("ForceRefreshToken called %d times, want 1", got)
+		t.Fatalf("RefreshRejectedToken called %d times, want 1", got)
 	}
 
 	// Second call (simulating outer-layer retry): should succeed with new token

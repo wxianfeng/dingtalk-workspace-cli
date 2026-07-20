@@ -862,13 +862,13 @@ Agent 安装 dws skill 后，仅依据 skill 提供的参考文档，将自然�
 - Flags: `--unified-app-id` = `UNIFIED_APP_ID`
 
 **dev_app_get_002**
-- Prompt: agentId 为 123456 的开放平台应用是哪个
-- Expected: `dws dev app get --agent-id 123456 --format json`
-- Flags: `--agent-id` = `123456`
+- Prompt: 按 appKey dingxxx 查开放平台应用详情
+- Expected: `dws dev app get --app-key dingxxx --format json`
+- Flags: `--app-key` = `dingxxx`
 
 **dev_app_get_003**
 - Prompt: 查开放平台应用 DemoApp 的 appKey、clientId 和 agentId
-- Expected: `dws dev app get --name DemoApp --format json`
+- Expected: `dws dev app list --name DemoApp --format json`
 - Flags: `--name` = `DemoApp`
 
 #### `dws dev app create`
@@ -994,7 +994,7 @@ Agent 安装 dws skill 后，仅依据 skill 提供的参考文档，将自然�
 
 ---
 
-### event（10 条）
+### event（18 条）
 
 #### `dws event consume user_im_message_receive_at`
 
@@ -1005,18 +1005,24 @@ Agent 安装 dws skill 后，仅依据 skill 提供的参考文档，将自然�
 #### `dws event consume user_im_message_receive_o2o`
 
 **event_event_consume_o2o_001**
-- Prompt: 监听我和 userId 507971 的单聊消息
-- Expected: `dws event consume user_im_message_receive_o2o --user 507971 -f ndjson`
-- Flags: `--user` = `507971`
+- Prompt: 监听我和 userId test-user-001 的单聊消息
+- Expected: `dws event consume user_im_message_receive_o2o --user test-user-001 -f ndjson`
+- Flags: `--user` = `test-user-001`
+
+**event_event_consume_o2o_open_id_001**
+- Prompt: 监听我和 openDingtalkId abc 的单聊消息
+- Expected: `dws event consume user_im_message_receive_o2o --open-dingtalk-id abc -f ndjson`
+- Flags: `--open-dingtalk-id` = `abc`
 
 **event_event_consume_o2o_003** `[ASK_USER]`
 - Prompt: 监听我的个人单聊消息
 - Expected: `dws event consume user_im_message_receive_o2o -f ndjson`
 
 **event_event_consume_o2o_auto_reply_001**
-- Prompt: 监听我和 userId 507971 的单聊消息，并对方发什么自动回复什么
-- Expected: `dws event consume user_im_message_receive_o2o --user 507971 -f ndjson`
-- Flags: `--user` = `507971`
+- Prompt: 监听我和 userId test-user-001 的单聊消息，并对方发什么自动回复什么
+- Expected: `dws event consume user_im_message_receive_o2o --user test-user-001 -f ndjson`
+- Flags: `--user` = `test-user-001`
+- Contract: 等待 stderr 的 `[event] ready`；从每行 NDJSON 顶层读取 `content` 和 `sender_open_dingtalk_id`，持续读取 stdout，不使用轮询或 output-dir watcher
 
 #### `dws event consume user_im_message_receive_group`
 
@@ -1024,6 +1030,73 @@ Agent 安装 dws skill 后，仅依据 skill 提供的参考文档，将自然�
 - Prompt: 监听 openConversationId cid123 的群消息
 - Expected: `dws event consume user_im_message_receive_group --group cid123 -f ndjson`
 - Flags: `--group` = `cid123`
+- Contract: 群自动回复时直接读取事件顶层 `conversation_id`
+
+#### `dws event consume user_im_message_receive_user`
+
+**event_event_consume_user_001**
+- Prompt: 监听 userId test-user-001 发给我的消息，包括单聊和群聊
+- Expected: `dws event consume user_im_message_receive_user --user test-user-001 -f ndjson`
+- Flags: `--user` = `test-user-001`
+
+**event_event_consume_user_open_id_001**
+- Prompt: 监听 openDingtalkId abc 发给我的消息，包括单聊和群聊
+- Expected: `dws event consume user_im_message_receive_user --open-dingtalk-id abc -f ndjson`
+- Flags: `--open-dingtalk-id` = `abc`
+
+#### `dws event consume user_im_message_read_o2o`
+
+**event_event_consume_read_o2o_001**
+- Prompt: 监听我发给 userId test-user-001 的单聊消息是否已读
+- Expected: `dws event consume user_im_message_read_o2o --user test-user-001 -f ndjson`
+- Flags: `--user` = `test-user-001`
+- Contract: 从每行 NDJSON 顶层读取 `message_id`、`reader`、`reader_open_dingtalk_id`、`read_time`
+
+#### `dws event consume user_im_message_read_group`
+
+**event_event_consume_read_group_001**
+- Prompt: 监听 openConversationId cid123 群里我发的消息是否已读
+- Expected: `dws event consume user_im_message_read_group --group cid123 -f ndjson`
+- Flags: `--group` = `cid123`
+- Contract: 从每行 NDJSON 顶层读取 `conversation_id`、`reader`、`reader_open_dingtalk_id`、`read_time`
+
+#### `dws event consume user_im_message_recall_o2o`
+
+**event_event_consume_recall_o2o_001**
+- Prompt: 监听我和 userId test-user-001 的单聊消息撤回事件
+- Expected: `dws event consume user_im_message_recall_o2o --user test-user-001 -f ndjson`
+- Flags: `--user` = `test-user-001`
+- Contract: 从每行 NDJSON 顶层读取 `message_id`、`recaller`、`recaller_open_dingtalk_id`、`recall_time`
+
+#### `dws event consume user_im_message_recall_group`
+
+**event_event_consume_recall_group_001**
+- Prompt: 监听 openConversationId cid123 的群消息撤回事件
+- Expected: `dws event consume user_im_message_recall_group --group cid123 -f ndjson`
+- Flags: `--group` = `cid123`
+- Contract: 从每行 NDJSON 顶层读取 `conversation_id`、`recaller`、`recaller_open_dingtalk_id`、`recall_time`
+
+#### `dws event consume user_im_message_reaction_o2o`
+
+**event_event_consume_reaction_o2o_001**
+- Prompt: 监听我和 userId test-user-001 的单聊消息贴表情事件
+- Expected: `dws event consume user_im_message_reaction_o2o --user test-user-001 -f ndjson`
+- Flags: `--user` = `test-user-001`
+- Contract: 从每行 NDJSON 顶层读取 `operator`、`operator_open_dingtalk_id`、`reaction_name`、`operation_type`
+
+**event_event_consume_reaction_o2o_open_id_001**
+- Prompt: 监听我和 openDingtalkId abc 的单聊消息贴表情事件
+- Expected: `dws event consume user_im_message_reaction_o2o --open-dingtalk-id abc -f ndjson`
+- Flags: `--open-dingtalk-id` = `abc`
+- Contract: 从每行 NDJSON 顶层读取 `operator`、`operator_open_dingtalk_id`、`reaction_name`、`operation_type`
+
+#### `dws event consume user_im_message_reaction_group`
+
+**event_event_consume_reaction_group_001**
+- Prompt: 监听 openConversationId cid123 的群消息表情回应事件
+- Expected: `dws event consume user_im_message_reaction_group --group cid123 -f ndjson`
+- Flags: `--group` = `cid123`
+- Contract: 从每行 NDJSON 顶层读取 `conversation_id`、`operator`、`reaction_name`、`reaction_text`、`operation_type`
 
 #### `dws chat search`
 

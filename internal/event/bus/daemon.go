@@ -103,6 +103,14 @@ type Config struct {
 	Logger *slog.Logger
 }
 
+var (
+	daemonMkdirAll        = os.MkdirAll
+	daemonAcquire         = Acquire
+	daemonWriteMeta       = WriteMeta
+	daemonListen          = transport.Listen
+	daemonShutdownTimeout = 2 * time.Second
+)
+
 // Run starts the bus daemon. Lifecycle (plan §4 invariant #6):
 //  1. Acquire bus.lock (single-instance enforcement)
 //  2. Write bus.meta
@@ -124,11 +132,11 @@ func Run(ctx context.Context, cfg Config) error {
 	log := cfg.Logger.With("component", "bus", "client_id", cfg.ClientID, "edition", cfg.Edition)
 
 	// 1. Acquire bus.lock
-	if err := os.MkdirAll(cfg.WorkDir, config.DirPerm); err != nil {
+	if err := daemonMkdirAll(cfg.WorkDir, config.DirPerm); err != nil {
 		return failReady(cfg.ReadyPipe, fmt.Errorf("bus: mkdir workdir: %w", err))
 	}
 	lockPath := filepath.Join(cfg.WorkDir, LockFileName)
-	lock, err := Acquire(lockPath)
+	lock, err := daemonAcquire(lockPath)
 	if err != nil {
 		return failReady(cfg.ReadyPipe, fmt.Errorf("bus: acquire lock: %w", err))
 	}
@@ -145,12 +153,12 @@ func Run(ctx context.Context, cfg Config) error {
 		SDKVersion:   cfg.SDKVersion,
 		BusPID:       os.Getpid(),
 	}
-	if err := WriteMeta(cfg.WorkDir, meta); err != nil {
+	if err := daemonWriteMeta(cfg.WorkDir, meta); err != nil {
 		return failReady(cfg.ReadyPipe, fmt.Errorf("bus: write meta: %w", err))
 	}
 
 	// 3. IPC listen
-	listener, err := transport.Listen(cfg.IPCEndpoint)
+	listener, err := daemonListen(cfg.IPCEndpoint)
 	if err != nil {
 		return failReady(cfg.ReadyPipe, fmt.Errorf("bus: ipc listen: %w", err))
 	}
@@ -238,10 +246,11 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// 7. Graceful shutdown — cancel runCtx first so all background
-	// goroutines wake up, then close listener / drain consumers.
+	// goroutines wake up, then stop accepting connections before draining
+	// consumers. The accept-loop barrier is required before WaitGroup.Wait:
+	// sync.WaitGroup forbids a positive Add racing with Wait.
 	cancelRun()
-	d.shutdown()
-	<-acceptDone
+	d.shutdown(acceptDone)
 	<-idleDone
 	<-dropWarnDone
 
@@ -283,6 +292,10 @@ func (d *daemon) acceptLoop(ctx context.Context) {
 			d.log.Warn("bus: accept error", "err", err)
 			continue
 		}
+		// Track the connection before publishing the handler goroutine. Once
+		// acceptLoop returns, shutdown can therefore close every accepted
+		// connection before waiting for handlers to drain.
+		d.conns.Store(conn, struct{}{})
 		d.consumerWG.Add(1)
 		go func() {
 			defer d.consumerWG.Done()
@@ -295,7 +308,6 @@ func (d *daemon) acceptLoop(ctx context.Context) {
 // Hello → register with Hub → spawn writer goroutine → read until EOF/Bye.
 // Always Unregisters and Closes on exit (plan invariant #5).
 func (d *daemon) handleConnection(ctx context.Context, conn net.Conn) {
-	d.conns.Store(conn, struct{}{})
 	defer func() {
 		d.conns.Delete(conn)
 		conn.Close()
@@ -470,9 +482,10 @@ func (d *daemon) triggerShutdown(reason string) {
 //  1. mark shuttingDown so acceptLoop exits cleanly
 //  2. broadcast Bye to all consumers
 //  3. close listener (interrupts pending Accept)
-//  4. wait for all per-connection goroutines to drain
-//  5. lock + meta cleanup via Run's defers
-func (d *daemon) shutdown() {
+//  4. wait for acceptLoop to return so no future consumerWG.Add can occur
+//  5. close all accepted connections and wait for handlers to drain
+//  6. lock + meta cleanup via Run's defers
+func (d *daemon) shutdown(acceptDone <-chan struct{}) {
 	d.shutdownMu.Lock()
 	defer d.shutdownMu.Unlock()
 	if !d.shuttingDown.CompareAndSwap(false, true) {
@@ -480,6 +493,7 @@ func (d *daemon) shutdown() {
 	}
 	d.hub.Broadcast(transport.Bye{Type: transport.FrameTypeBye, Reason: "shutdown"})
 	_ = d.listener.Close()
+	<-acceptDone
 	// Force-close all open IPC connections so any reader goroutine blocked
 	// on Read() returns with a network error and exits cleanly. Without
 	// this the consumerWG never drains and Run hangs forever.
@@ -498,7 +512,7 @@ func (d *daemon) shutdown() {
 	}()
 	select {
 	case <-doneCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(daemonShutdownTimeout):
 		d.log.Warn("bus: shutdown: consumer goroutines did not drain within 2s")
 	}
 }

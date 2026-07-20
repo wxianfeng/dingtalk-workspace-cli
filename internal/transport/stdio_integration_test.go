@@ -21,6 +21,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -42,7 +44,7 @@ func TestStdioClientEndToEnd(t *testing.T) {
 	}
 	defer client.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Initialize
@@ -119,6 +121,24 @@ func TestStdioClientCallBeforeStart(t *testing.T) {
 	}
 }
 
+func TestStdioClientEnsureInitializedIsIdempotent(t *testing.T) {
+	client := NewStdioClient(buildTestHelper(t), nil, nil)
+	defer client.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := client.EnsureInitialized(ctx); err != nil {
+		t.Fatalf("first EnsureInitialized: %v", err)
+	}
+	firstID := atomic.LoadInt64(&client.nextID)
+	if err := client.EnsureInitialized(ctx); err != nil {
+		t.Fatalf("second EnsureInitialized: %v", err)
+	}
+	if secondID := atomic.LoadInt64(&client.nextID); secondID != firstID {
+		t.Fatalf("second EnsureInitialized sent another request: ids %d -> %d", firstID, secondID)
+	}
+}
+
 // buildTestHelper compiles testdata/stdio_test_server.go into a temporary binary.
 func buildTestHelper(t *testing.T) string {
 	t.Helper()
@@ -128,6 +148,9 @@ func buildTestHelper(t *testing.T) string {
 	}
 
 	binPath := filepath.Join(t.TempDir(), "stdio-test-server")
+	if runtime.GOOS == "windows" {
+		binPath += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", binPath, serverSrc)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

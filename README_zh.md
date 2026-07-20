@@ -71,9 +71,9 @@ irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/ma
 | 模式 | 安装内容 | 适合场景 |
 |------|----------|----------|
 | **mono**（稳定，默认） | 一个 `dws` skill，覆盖全部产品 | 跨产品组合操作；单一入口召唤 |
-| **multi** 🧪 **试验版 / Preview** | 22 个独立产品 skill（`dingtalk-aitable` / `dingtalk-calendar` / `dingtalk-chat` ...） | 单产品任务；每次召唤上下文更小 |
+| **multi** 🧪 **试验版 / Preview** | 按产品拆分的独立 skill（`dingtalk-aitable` / `dingtalk-calendar` / `dingtalk-chat` ...） | 单产品任务；每次召唤上下文更小 |
 
-> 🧪 **multi 模式当前为 EXPERIMENTAL（试验版 / Preview）**。22 个独立 skill 全部通过 dispatch verifier，但接口、命名、跨 skill 引用后续可能调整。生产 / 共享环境建议优先用 `mono`。问题请提 issue 反馈。
+> 🧪 **multi 模式当前为 EXPERIMENTAL（试验版 / Preview）**。全部独立 skill 均通过 dispatch verifier，但接口、命名、跨 skill 引用后续可能调整。生产 / 共享环境建议优先用 `mono`。问题请提 issue 反馈。
 
 怎么选：
 
@@ -92,6 +92,30 @@ irm https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/ma
 ```bash
 npm install -g dingtalk-workspace-cli
 ```
+
+安装最新 beta：
+
+```bash
+npm install -g dingtalk-workspace-cli@beta
+```
+
+**Homebrew**（macOS / Linux）：
+
+```bash
+brew tap DingTalk-Real-AI/dingtalk-workspace-cli https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli.git
+brew install dingtalk-workspace-cli
+```
+
+> Formula 与代码位于同一个仓库，因此首次 `tap` 需要显式指定仓库 URL。后续可直接使用 `brew upgrade dingtalk-workspace-cli`。
+
+安装 Homebrew beta（keg-only，不覆盖稳定版）：
+
+```bash
+brew install dingtalk-workspace-cli-beta
+$(brew --prefix dingtalk-workspace-cli-beta)/bin/dws version
+```
+
+如需让 beta 的 `dws` 成为当前 shell 默认版本，将 `$(brew --prefix dingtalk-workspace-cli-beta)/bin` 放到 PATH 最前面。
 
 **预编译二进制文件**：从 [GitHub Releases](https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases) 下载。
 
@@ -164,6 +188,18 @@ dws upgrade -y                 # 跳过确认直接升级
 ```
 
 默认情况下，`dws upgrade` 只跟随正式 release 轨道。只有显式传入 `--beta` 时，才会选择 GitHub pre-release 里的 beta 构建。
+
+### 六渠道发布后验证
+
+维护者和验证同学可按发版质量保障 SOP，对 curl、PowerShell、npm stable、npm beta、Homebrew、`dws upgrade` 执行安装与冒烟验证：
+
+```bash
+git clone https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli.git /tmp/dws-verify
+cd /tmp/dws-verify/verify
+bash verify-all-channels.sh
+```
+
+脚本使用隔离目录，不会替换当前 PATH 中的 `dws`；输出 `PASS`、`FAIL`、`SKIP` 汇总。跨平台渠道必须由对应平台补测，`SKIP` 不计为通过。验证范围和平台矩阵见 [`verify/README.md`](verify/README.md)。
 
 <details>
 <summary><strong>工作原理</strong></summary>
@@ -244,16 +280,22 @@ dws auth login --client-id <your-app-key> --client-secret <your-app-secret>
 <details>
 <summary><strong>多组织（profile）</strong></summary>
 
-`dws` 可以同时登录多个钉钉组织。一个组织就是一个 **profile**，当前 profile 决定本次命令操作哪个组织（凭证按组织分别存储）。
+`dws` 可以同时登录多个钉钉账号，同一组织也能保留多个账号。一个 profile 由 `corpId + userId` 唯一确定。
 
 ```bash
-dws auth login                              # 再登录一个组织 → 新增一个 profile（首次登录的为主组织）
-dws profile list                            # 列出已登录组织（主 / 当前标记、状态）
-dws profile switch <名称|corpId>            # 切换默认组织（用 - 切回上一个）
-dws --profile <名称|corpId> contact user search --query "..."   # 单次对指定组织执行，不改默认组织
+dws auth login                              # 新增或刷新一个账号
+dws profile list                            # 列出全部账号，profile 字段是稳定的 corpId:userId
+dws profile switch <corpId:userId>          # 持久切换账号；用 - 切回上一个
+dws profile switch "组织名:用户名"          # 名称输入要求唯一
+dws --profile <corpId> contact user search --query "..."        # 使用该组织明确记录的当前账号
+dws --profile <corpId:userId> contact user search --query "..." # 单次精确指定账号，不改默认账号
 ```
 
-跨组织读取由 agent 编排，而非内置 `--all-orgs`：先 `dws profile list` 拿到组织，再对每个组织带 `--profile` 各查一遍，然后合并。写操作默认只在当前组织进行——跨组织写之前先确认目标组织。
+支持 `corpId:userId`、`corpId:userName`、`corpName:userId`、`corpName:userName`。名称只用于输入，自动化应使用 `profile list` 返回的稳定 `profile`。组织名或用户名重名时会列出候选并报错；同组织多账号但没有明确当前账号时，只传组织也会报错，不会选择第一项或最近使用账号。
+
+`currentProfile`、`previousProfile` 和组织默认账号都保存精确身份。`primaryProfile` 只为 JSON 兼容保留，不再参与选择。`profile list` 直接读取各身份 Token 计算状态和到期时间，不触发刷新。`auth logout --profile <corpId>` 退出该组织全部账号；精确选择器或本地 profile 名只退出一个账号。
+
+跨组织读取由 agent 编排，而非内置 `--all-orgs`：先 `dws profile list`，每个组织使用唯一的 `isOrgCurrent=true` 账号；若多账号组织没有默认账号，先让用户指定账号。写操作默认只在当前账号执行——跨组织写之前先确认目标组织和账号。
 
 macOS 下，如果已登记的 token slot 无法解密，为避免把系统 Keychain 和 file-DEK 写成混合状态，新的 OAuth 登录会直接拒绝。如果普通终端仍能读取登录态、只有设置 `DWS_DISABLE_KEYCHAIN=1` 的沙箱读不到，可在不暴露 token 的情况下迁移 legacy 与各 profile 的认证条目：
 
@@ -263,7 +305,7 @@ env -u DWS_DISABLE_KEYCHAIN dws auth migrate-keychain --to file-dek --yes --form
 DWS_DISABLE_KEYCHAIN=1 dws auth status --format json
 ```
 
-迁移会先验证全部认证密文再写入、忽略无关的应用密钥；提交中断后可安全重跑。如果预检确认是密文本身损坏，报错会给出对应 `corpId`；只清理这个组织可执行 `dws auth logout --profile <名称|corpId>`，再重新登录。只有确认要丢弃全部本地 profile 时才用 `dws auth reset`。
+迁移会先验证全部认证密文再写入、忽略无关的应用密钥；提交中断后可安全重跑。如果预检确认是密文本身损坏，优先使用 `dws auth logout --profile <corpId:userId>` 只清理受影响账号；只有确认要丢弃全部本地 profile 时才用 `dws auth reset`。
 
 </details>
 
@@ -320,25 +362,35 @@ dws contact user get-self --jq '.result[0].orgEmployeeModel | {name: .orgUserNam
 
 ### 命令帮助与 Schema
 
-产品命令在静态端点模式下已经编译进二进制。Agent 以 `--help` 和内置 Skill 为事实源；`dws schema` 仅保留给 `dev.*` 等 helper-only schema 查询。
+命令帮助和 Schema 分别负责命令契约的不同部分：
+
+- `dws <path> --help` 是命令是否存在、当前二进制接受哪些 flags 的事实源。
+- `dws schema "<path>"` 是 Agent 选命令、参数映射与约束、风险和确认语义的契约。
+- Help 与 Schema 冲突时视为契约漂移：执行只传 Cobra 接受的参数，安全语义取更保守值。
+- Schema 只描述命令，不读取或搜索钉钉业务数据；发现命令后仍需执行真实产品命令。
 
 ```bash
-# 查看当前编译出的命令面
+# 确认命令存在并查看当前接受的 flags
 dws aitable record query --help
 
-# helper-only schema 自省
-dws schema "dev app create"
+# 先在产品内发现命令，再查看选中 leaf 的契约
+dws schema aitable
+dws schema "aitable record query"
 
-# 构造正确的调用
+# 执行真实业务查询
 dws aitable record query --base-id BASE_ID --table-id TABLE_ID --limit 10
 ```
 
+`dws schema --all` 会完整导出命令契约，供工具、CI、审计和兼容性基线使用。Agent 应优先按产品/分组发现后查询 leaf，避免把整个 Catalog 加载进上下文。
+
 ### Agent Skills
 
-仓库内置完整的 Agent Skill 体系（`skills/` 目录），目前重组为两套布局：
+仓库内置完整的 Agent Skill 体系（`skills/` 目录），分为两套布局：
 
 - `skills/mono/` — 单 skill 布局（一个 `SKILL.md` + `references/products/`），默认推荐。
-- `skills/multi/` — 每个产品一个独立 skill（`dingtalk-aitable/` / `dingtalk-calendar/` / `dingtalk-chat/` ... 共 22 个），每个 skill 自带 `SKILL.md`。🧪 **试验版 / Preview — 各 multi `SKILL.md` 头部有详细注意事项。**
+- `skills/multi/` — 每个产品一个独立 skill（`dingtalk-aitable/` / `dingtalk-calendar/` / `dingtalk-chat/` ...），每个 skill 自带 `SKILL.md`。🧪 **试验版 / Preview — 各 multi `SKILL.md` 头部有详细注意事项。**
+
+Schema 生成共享的 reviewed 输入单独位于 `internal/cli/schema_hints/`。它们不是 Agent Skill，也不会进入二进制或发布 skill 包。
 
 安装之后，Claude Code / Cursor 等 AI 工具就能通过自然语言直接操作钉钉：
 
@@ -437,6 +489,9 @@ dws event consume user_im_message_receive_at -f ndjson
 # 监听与指定用户的单聊消息
 dws event consume user_im_message_receive_o2o --user <userId> -f ndjson
 
+# 使用 openDingtalkId 监听外部联系人、机器人或跨组织身份
+dws event consume user_im_message_receive_o2o --open-dingtalk-id <openDingtalkId> -f ndjson
+
 # 监听指定群的消息
 dws event consume user_im_message_receive_group --group <openConversationId> -f ndjson
 
@@ -444,6 +499,8 @@ dws event consume user_im_message_receive_group --group <openConversationId> -f 
 dws event status
 dws event stop <subscribe_id>
 ```
+
+单聊和指定发送人事件必须且只能选择一种目标身份：企业内部 `userId` 使用 `--user`，`openDingtalkId` 使用 `--open-dingtalk-id`。CLI 不会自动猜测或转换身份类型。
 
 | 特性 | 说明 |
 |------|------|
@@ -548,12 +605,13 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocati
 </details>
 
 <details>
-<summary><strong>Schema 自省</strong> — 静态端点模式下的 helper-only schema</summary>
+<summary><strong>Schema 自省</strong> — Agent 命令发现与执行契约</summary>
 
 ```bash
-dws schema                                              # 静态端点模式提示
-dws schema "dev app create"                             # 查看 helper-only schema
-dws schema "dev app create" --jq '.tool.required'        # 查看必填字段
+dws schema aitable                                      # 发现产品命令
+dws schema "aitable record query"                       # 查看选中 leaf 契约
+dws schema "aitable record query" --jq '.tool.required' # 查看必填字段
+dws schema --all                                        # CI/审计/基线的全量导出
 ```
 
 </details>
@@ -600,7 +658,7 @@ dws dev connect --channel auto --robot-client-id <id> --robot-client-secret <sec
 
 | 服务 | 命令 | 能力 |
 |------|------|------|
-| 通讯录 | `contact` | 按姓名 / 手机号 / 工号查人，部门、角色标签、花名册与离职 |
+| 通讯录 | `contact` | 按姓名 / 手机号 / 工号查人，部门、角色标签、花名册与离职；创建企业、企业账号及邀请员工 |
 | 群聊 | `chat`（`im`）| 发送 / 回复 / 搜索消息，群与成员管理，机器人与 Webhook 发消息，表情反应，撤回 |
 | 日历 | `calendar` | 日程 CRUD、参与者、会议室、闲忙与时间建议 |
 | 待办 | `todo` | 创建 / 列表 / 修改 / 完成待办及评论 |

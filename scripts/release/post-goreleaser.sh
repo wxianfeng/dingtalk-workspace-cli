@@ -10,6 +10,9 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 DIST_DIR="${DWS_PACKAGE_DIST_DIR:-$ROOT/dist}"
 PACKAGE_VERSION="${DWS_PACKAGE_VERSION:-}"
 RELEASE_BASE_URL="${DWS_RELEASE_BASE_URL:-}"
+APPLE_CERTIFICATE_P12="${DWS_APPLE_CERTIFICATE_P12:-}"
+APPLE_CERTIFICATE_PASSWORD_FILE="${DWS_APPLE_CERTIFICATE_PASSWORD_FILE:-}"
+REQUIRE_DEVELOPER_ID_SIGNING="${DWS_REQUIRE_DEVELOPER_ID_SIGNING:-false}"
 
 export LANG=C
 export LC_ALL=C
@@ -87,21 +90,9 @@ resolve_release_base_url() {
 
 stage_npm_package() {
   version="$1"
-  pkg_root="$DIST_DIR/npm/dingtalk-workspace-cli"
-
-  rm -rf "$pkg_root"
-  mkdir -p "$pkg_root/assets" "$pkg_root/bin"
-
-  cp "$ROOT/build/npm/install.js" "$pkg_root/install.js"
-  cp "$ROOT/build/npm/bin/dws.js" "$pkg_root/bin/dws.js"
-  cp "$ROOT/build/npm/README.md" "$pkg_root/README.md"
-  sed "s|__VERSION__|$version|g" "$ROOT/build/npm/package.json.tmpl" > "$pkg_root/package.json"
-
-  for artifact in "$DIST_DIR"/dws-*.tar.gz "$DIST_DIR"/dws-*.zip "$DIST_DIR"/dws-skills.zip; do
-    if [ -f "$artifact" ]; then
-      cp "$artifact" "$pkg_root/assets/"
-    fi
-  done
+  DWS_PACKAGE_SOURCE_ROOT="$ROOT" \
+    DWS_PACKAGE_DIST_DIR="$DIST_DIR" \
+    "$ROOT/scripts/release/stage-npm-package.sh" "$version"
 }
 
 # ---------- Homebrew formula staging ----------
@@ -125,6 +116,42 @@ render_homebrew_formula() {
     "$ROOT/build/homebrew.rb.tmpl" > "$output_path"
 }
 
+render_homebrew_release_formula() {
+  class_name="$1"
+  version="$2"
+  release_url_base="$3"
+  darwin_amd64_sha="$4"
+  darwin_arm64_sha="$5"
+  linux_amd64_sha="$6"
+  linux_arm64_sha="$7"
+  skills_sha="$8"
+  keg_only_line="$9"
+  channel_caveat="${10}"
+  output_path="${11}"
+  description="Automate DingTalk workspace tasks from the terminal"
+  if [ "$class_name" = "DingtalkWorkspaceCliBeta" ]; then
+    description="$description (beta channel)"
+  fi
+
+  sed \
+    -e "s|__CLASS_NAME__|$class_name|g" \
+    -e "s|__DESCRIPTION__|$description|g" \
+    -e "s|__VERSION__|$version|g" \
+    -e "s|__DARWIN_AMD64_URL__|$release_url_base/dws-darwin-amd64.tar.gz|g" \
+    -e "s|__DARWIN_AMD64_SHA256__|$darwin_amd64_sha|g" \
+    -e "s|__DARWIN_ARM64_URL__|$release_url_base/dws-darwin-arm64.tar.gz|g" \
+    -e "s|__DARWIN_ARM64_SHA256__|$darwin_arm64_sha|g" \
+    -e "s|__LINUX_AMD64_URL__|$release_url_base/dws-linux-amd64.tar.gz|g" \
+    -e "s|__LINUX_AMD64_SHA256__|$linux_amd64_sha|g" \
+    -e "s|__LINUX_ARM64_URL__|$release_url_base/dws-linux-arm64.tar.gz|g" \
+    -e "s|__LINUX_ARM64_SHA256__|$linux_arm64_sha|g" \
+    -e "s|__SKILLS_URL__|$release_url_base/dws-skills.zip|g" \
+    -e "s|__SKILLS_SHA256__|$skills_sha|g" \
+    -e "s|__KEG_ONLY_LINE__|$keg_only_line|g" \
+    -e "s|__CHANNEL_CAVEAT__|$channel_caveat|g" \
+    "$ROOT/build/homebrew-release.rb.tmpl" > "$output_path"
+}
+
 stage_homebrew_formula() {
   version="$1"
   host_os="$(detect_os)"
@@ -133,16 +160,24 @@ stage_homebrew_formula() {
   formula_dir="$DIST_DIR/homebrew"
   archive_path="$DIST_DIR/dws-${host_os}-${host_arch}${archive_ext}"
   release_url_base="$(resolve_release_base_url "$version")"
-  archive_name="$(basename "$archive_path")"
-  skills_name="$(basename "$DIST_DIR/dws-skills.zip")"
   archive_sha="$(sha256_file "$archive_path")"
   skills_sha="$(sha256_file "$DIST_DIR/dws-skills.zip")"
+
+  darwin_amd64="$DIST_DIR/dws-darwin-amd64.tar.gz"
+  darwin_arm64="$DIST_DIR/dws-darwin-arm64.tar.gz"
+  linux_amd64="$DIST_DIR/dws-linux-amd64.tar.gz"
+  linux_arm64="$DIST_DIR/dws-linux-arm64.tar.gz"
 
   mkdir -p "$formula_dir"
 
   if [ ! -f "$archive_path" ]; then
     err "host archive missing for homebrew formula: $archive_path"
   fi
+  for release_archive in "$darwin_amd64" "$darwin_arm64" "$linux_amd64" "$linux_arm64"; do
+    if [ ! -f "$release_archive" ]; then
+      err "release archive missing for Homebrew formula: $release_archive"
+    fi
+  done
 
   render_homebrew_formula \
     "DingtalkWorkspaceCliLocal" \
@@ -153,14 +188,31 @@ stage_homebrew_formula() {
     '  keg_only "Local verification formula to avoid linking conflicts"' \
     "$formula_dir/dingtalk-workspace-cli-local.rb"
 
-  render_homebrew_formula \
-    "DingtalkWorkspaceCli" \
-    "$release_url_base/$archive_name" \
-    "$release_url_base/$skills_name" \
-    "$archive_sha" \
+  formula_class="DingtalkWorkspaceCli"
+  formula_path="$formula_dir/dingtalk-workspace-cli.rb"
+  keg_only_line=""
+  channel_caveat=""
+  case "$version" in
+    *-*)
+      formula_class="DingtalkWorkspaceCliBeta"
+      formula_path="$formula_dir/dingtalk-workspace-cli-beta.rb"
+      keg_only_line='  keg_only "it is the beta channel and conflicts with dingtalk-workspace-cli"'
+      channel_caveat='      This beta is keg-only. Add #{opt_bin} to PATH to use its `dws` binary.'
+      ;;
+  esac
+
+  render_homebrew_release_formula \
+    "$formula_class" \
+    "$version" \
+    "$release_url_base" \
+    "$(sha256_file "$darwin_amd64")" \
+    "$(sha256_file "$darwin_arm64")" \
+    "$(sha256_file "$linux_amd64")" \
+    "$(sha256_file "$linux_arm64")" \
     "$skills_sha" \
-    "" \
-    "$formula_dir/dingtalk-workspace-cli.rb"
+    "$keg_only_line" \
+    "$channel_caveat" \
+    "$formula_path"
 }
 
 # ---------- skills zip ----------
@@ -195,14 +247,47 @@ create_skills_zip() {
   rm -rf "$staging"
 }
 
-# ---------- darwin ad-hoc signing ----------
+# ---------- darwin signing ----------
 #
 # Unsigned arm64 binaries are SIGKILL'd by amfid on Apple Silicon (macOS 11+).
-# We unpack each dws-darwin-*.tar.gz, ad-hoc sign the dws binary, repack
-# deterministically, and rewrite the corresponding line in checksums.txt.
+# Official releases use an Apple Developer ID certificate loaded from GitHub
+# Secrets. Fork/local builds retain ad-hoc signing so they remain runnable.
+# We unpack each dws-darwin-*.tar.gz, sign the dws binary, repack deterministically,
+# and rewrite the corresponding line in checksums.txt.
+
+configure_darwin_signing() {
+  case "$REQUIRE_DEVELOPER_ID_SIGNING" in
+    1|true|yes) require_developer_id=1 ;;
+    0|false|no|"") require_developer_id=0 ;;
+    *) err "invalid DWS_REQUIRE_DEVELOPER_ID_SIGNING value: $REQUIRE_DEVELOPER_ID_SIGNING" ;;
+  esac
+
+  if [ -n "$APPLE_CERTIFICATE_P12" ] || [ -n "$APPLE_CERTIFICATE_PASSWORD_FILE" ]; then
+    [ -n "$APPLE_CERTIFICATE_P12" ] || err "DWS_APPLE_CERTIFICATE_P12 is required when Developer ID signing is configured"
+    [ -n "$APPLE_CERTIFICATE_PASSWORD_FILE" ] || err "DWS_APPLE_CERTIFICATE_PASSWORD_FILE is required when Developer ID signing is configured"
+    [ -f "$APPLE_CERTIFICATE_P12" ] || err "Developer ID P12 file not found: $APPLE_CERTIFICATE_P12"
+    [ -f "$APPLE_CERTIFICATE_PASSWORD_FILE" ] || err "Developer ID password file not found: $APPLE_CERTIFICATE_PASSWORD_FILE"
+    command -v rcodesign >/dev/null 2>&1 || err "rcodesign is required for Developer ID signing"
+    DARWIN_SIGNING_MODE="developer-id"
+    return
+  fi
+
+  if [ "$require_developer_id" -eq 1 ]; then
+    err "Developer ID signing is required but DWS_APPLE_CERTIFICATE_P12 and DWS_APPLE_CERTIFICATE_PASSWORD_FILE are not configured"
+  fi
+  DARWIN_SIGNING_MODE="ad-hoc"
+}
 
 sign_one_darwin_binary() {
   bin="$1"
+  if [ "$DARWIN_SIGNING_MODE" = "developer-id" ]; then
+    rcodesign sign \
+      --p12-file "$APPLE_CERTIFICATE_P12" \
+      --p12-password-file "$APPLE_CERTIFICATE_PASSWORD_FILE" \
+      --for-notarization \
+      "$bin"
+    return
+  fi
   if command -v codesign >/dev/null 2>&1; then
     codesign --force --sign - "$bin"
     return
@@ -272,18 +357,22 @@ sign_darwin_archives() {
 }
 
 write_checksums() {
-  checksum_path="$DIST_DIR/checksums.txt"
-  # Append skills zip checksum to goreleaser's checksums file
+  # Keep this idempotent: workflow retries must not leave duplicate entries.
   if [ -f "$DIST_DIR/dws-skills.zip" ]; then
-    printf '%s  %s\n' "$(sha256_file "$DIST_DIR/dws-skills.zip")" "dws-skills.zip" >> "$checksum_path"
+    update_checksum_entry "dws-skills.zip" "$(sha256_file "$DIST_DIR/dws-skills.zip")"
   fi
 }
 
 # ---------- main ----------
 
 version="$(resolve_version)"
+configure_darwin_signing
 
-say "==> Ad-hoc signing darwin binaries"
+if [ "$DARWIN_SIGNING_MODE" = "developer-id" ]; then
+  say "==> Developer ID signing darwin binaries"
+else
+  say "==> Ad-hoc signing darwin binaries"
+fi
 sign_darwin_archives
 
 say "==> Creating skills zip"

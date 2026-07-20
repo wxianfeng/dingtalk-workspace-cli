@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 
 	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cli"
 	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
@@ -411,6 +412,19 @@ agentCode 配置:
 	chmodCmd.Flags().StringArrayVar(&domainFlags, "domain", nil, "产品域/产品编码，可重复；按产品 scope 模板批量授权；执行授权需 --yes")
 	chmodCmd.Flags().StringSliceVar(&domainsFlag, "domains", nil, "产品域/产品编码列表，逗号分隔；执行批量授权需 --yes")
 	chmodCmd.Flags().BoolVar(&recommend, "recommend", false, "使用推荐 scope 集合批量授权；执行授权需 --yes")
+	cli.AttachRuntimeSchema(chmodCmd, "pat", "batch_grant", "hardcoded:pat")
+	cli.AnnotateRuntimeFlagEnum(chmodCmd, "grant-type", "once", "session", "permanent")
+	cli.AnnotateRuntimeConstraints(chmodCmd, cli.RuntimeSchemaConstraints{
+		RequireOneOf: [][]string{{"scope", "product", "products", "domain", "domains", "recommend"}},
+	})
+	cli.AnnotateRuntimePositionals(chmodCmd, cli.RuntimeSchemaPositional{
+		Name:        "scope",
+		Type:        "array",
+		Description: "权限 scope，格式为 <product>.<entity>:<permission>；可重复",
+		Required:    false,
+		Variadic:    true,
+		Index:       0,
+	})
 
 	return chmodCmd
 }
@@ -576,10 +590,7 @@ func PlanLoginRecommendAuthorization(ctx context.Context, c edition.ToolCaller) 
 	if err != nil {
 		return nil, err
 	}
-	products, err := extractLoginRecommendProducts(planResult)
-	if err != nil {
-		return nil, err
-	}
+	products, _ := extractLoginRecommendProducts(planResult)
 	return &LoginRecommendPlan{
 		Result:     planResult,
 		Scopes:     scopes,
@@ -686,10 +697,7 @@ func planLoginRecommend(ctx context.Context, c edition.ToolCaller, productCodes 
 	if err != nil {
 		return planResult, nil, false, err
 	}
-	allGranted, err := extractBatchPlanAllGranted(planResult)
-	if err != nil {
-		return planResult, nil, false, err
-	}
+	allGranted, _ := extractBatchPlanAllGranted(planResult)
 	return planResult, scopes, allGranted, nil
 }
 
@@ -774,15 +782,9 @@ func extractLoginRecommendProducts(result *edition.ToolResult) ([]LoginRecommend
 	}
 
 	if len(order) == 0 {
-		scopes, err := extractSelectedScopesAllowEmpty(result)
-		if err != nil {
-			return nil, err
-		}
+		scopes, _ := extractSelectedScopesAllowEmpty(result)
 		for _, scope := range scopes {
 			code := productCodeFromScope(scope)
-			if code == "" {
-				continue
-			}
 			if groups[code] == nil {
 				groups[code] = &productGroup{
 					item: LoginRecommendProduct{
@@ -802,9 +804,6 @@ func extractLoginRecommendProducts(result *edition.ToolResult) ([]LoginRecommend
 	products := make([]LoginRecommendProduct, 0, len(order))
 	for _, code := range order {
 		group := groups[code]
-		if group == nil {
-			continue
-		}
 		group.item.Summary = strings.Join(group.summaryParts, "、")
 		products = append(products, group.item)
 	}
@@ -1326,9 +1325,6 @@ func commandBoolFlag(cmd *cobra.Command, name string) bool {
 		return err == nil && value
 	}
 	root := cmd.Root()
-	if root == nil {
-		return false
-	}
 	value, err := root.PersistentFlags().GetBool(name)
 	return err == nil && value
 }
@@ -1341,9 +1337,6 @@ func commandFlagChanged(cmd *cobra.Command, name string) bool {
 		return true
 	}
 	root := cmd.Root()
-	if root == nil {
-		return false
-	}
 	flag := root.PersistentFlags().Lookup(name)
 	return flag != nil && flag.Changed
 }
@@ -1357,9 +1350,6 @@ func commandStringFlag(cmd *cobra.Command, name string) string {
 		return value
 	}
 	root := cmd.Root()
-	if root == nil {
-		return ""
-	}
 	value, _ := root.PersistentFlags().GetString(name)
 	return value
 }

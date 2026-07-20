@@ -26,6 +26,34 @@ metadata:
 9. `version check-approval` 若返回 `completionState=WAITING_FOR_APPROVER_SELECTION`，选择题原样展示 `approvalPromptText`（或 `approvalOptions[].label`），不得把姓名丢成泛化“候选审批人”
 10. `robot result` 若缺 `unifiedAppId` 或返回 `completionState=BLOCKED_BY_MISSING_UNIFIED_APP_ID`，必须停下要求明确的 `unifiedAppId`；禁止用 `clientId/appKey` 自动反查后继续执行版本写操作
 
+<!-- VISIBLE_SHORTCUTS_START -->
+## Shortcuts（无专用脚本/recipe 时优先）
+
+以下 shortcut 来自独立于 Runtime Schema 的公开 catalog。先按本 skill 的意图表、脚本和 recipe 路由：存在精确覆盖该场景的专用脚本/recipe 时按其执行；否则用户意图命中时，shortcut 优先于手写原子命令。用 `dws shortcut list --service devapp --format json` 读取参数、约束、风险和示例，并以 `dws devapp <shortcut> --help` 核对当前 Cobra flags；不要对 `+` 路径调用 `dws schema`。
+
+| Shortcut | 风险 | 适用场景 |
+|---|---|---|
+| `dws devapp +create` | write | 创建开放平台企业内部应用 |
+| `dws devapp +delete` | high-risk-write | 删除开放平台企业内部应用（不可逆） |
+| `dws devapp +disable` | high-risk-write | 停用开放平台企业内部应用 |
+| `dws devapp +enable` | write | 启用开放平台企业内部应用 |
+| `dws devapp +event-list` | read | 查询应用已订阅的事件列表 |
+| `dws devapp +get` | read | 查询开放平台企业内部应用详情 |
+| `dws devapp +list` | read | 查询开放平台企业内部应用列表 |
+| `dws devapp +member-add` | write | 添加开放平台应用成员 |
+| `dws devapp +member-list` | read | 查询开放平台应用成员 |
+| `dws devapp +member-remove` | high-risk-write | 移除开放平台应用成员 |
+| `dws devapp +permission-list` | read | 查询开放平台应用权限列表 |
+| `dws devapp +robot-get` | read | 查询现有应用的机器人配置 |
+| `dws devapp +update` | write | 修改开放平台企业内部应用基础信息 |
+| `dws devapp +version-check-approval` | read | 预检版本发布是否需要审批（不实际发布） |
+| `dws devapp +version-get` | read | 查询指定版本详情 |
+| `dws devapp +version-list` | read | 分页查询应用版本列表 |
+| `dws devapp +version-status` | read | 查询版本发布/审批状态 |
+| `dws devapp +webapp-config` | write | 配置网页应用能力 |
+| `dws devapp +webapp-get` | read | 查询网页应用配置 |
+<!-- VISIBLE_SHORTCUTS_END -->
+
 ## 概念地图
 先建立领域模型，再看命令——所有命令都是对这张图上某个节点的操作，用户的模糊意图先映射到节点再选命令。
 
@@ -49,12 +77,12 @@ metadata:
 | 标识 | 是什么 | 用在哪 |
 |------|--------|--------|
 | `unifiedAppId` | 统一应用 ID，全树主键 | 唯一全树定位标识，所有单应用命令都用 `--unified-app-id` |
-| `appKey` = `clientId` | 应用身份标识，同一个标识的两个名字，非密钥 | OpenAPI 调用、建联；也可作 `--app-key` 列表过滤（不能定位单应用） |
+| `appKey` = `clientId` | 应用身份标识，同一个标识的两个名字，非密钥 | OpenAPI 调用、建联；`dev app get --app-key` 只读查详情；也可作 `--app-key` 列表过滤 |
 | `appSecret` = `clientSecret` | 应用密钥，敏感 | 同上，按敏感凭证处理 |
 | `agentId` | 应用 ID，仅出现在返回数据里 | 不能用于写操作定位 |
 | `robotCode` | 机器人编号 | 加群、机器人发消息、建联 |
 
-应用定位统一只用 `--unified-app-id`（--app-key/--name 仅作 list 过滤，不能定位单应用）。agentId 只是返回字段，不能用于写操作定位。appKey 与 clientId 是同一标识的两个名字，无需追问区别。
+应用定位：写操作统一只用 `--unified-app-id`；`dev app get` 可用 `--app-key` 只读查详情（`--name` 仍仅作 list 过滤）。agentId 只是返回字段，不能用于写操作定位。appKey 与 clientId 是同一标识的两个名字，无需追问区别。
 
 ### 生效模型
 - 改配置不等于线上生效，需审批的变更（如 `requiredApproval=true` 的权限点）先累积在开发态，必须走版本通道才上线：
@@ -77,7 +105,7 @@ metadata:
 
 ## 核心规则
 1. `应用`、`机器人` 是泛词：用户只说这两个词、无开放平台上下文时，先追问确认是不是开发者后台的企业内部应用，不要猜——很可能是工作台应用或群消息机器人（转出口见上方「边界与角色」）。
-2. 应用名/appKey 只可用于只读列表过滤或人工排查；任何写操作必须由用户或上游结果提供明确 `unifiedAppId`，不能把单条列表命中当自动确认。
+2. 应用名只可用于只读列表过滤或人工排查；`app get --app-key` 可只读查详情并拿回 `unifiedAppId`。任何写操作必须由用户或上游结果提供明确 `unifiedAppId`，不能把单条列表命中当自动确认。
 3. 权限申请/取消只接受 `scopeValue`，不传 API 名或分组名——权限点才是授权单元，API 名与权限点是多对一。
 4. 主动读取密钥走 `credentials get`（secret 的脱敏要求见 MUST DO）；例外：connect 流程内部把 secret 作为参数传给 `dev connect` 是必要用途。
 5. 审批人必须用户拍板，agent 不代选、不默认取第一个。
