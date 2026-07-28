@@ -19,6 +19,51 @@ import (
 //            get_upload_info, commit_upload
 // ──────────────────────────────────────────────────────────
 
+func driveRenameBaseName(name, nodeType, currentExtension string) string {
+	trimmed := strings.TrimSpace(name)
+	switch strings.ToLower(strings.TrimSpace(nodeType)) {
+	case "folder", "dir", "directory":
+		return trimmed
+	}
+
+	extension := strings.TrimLeft(strings.TrimSpace(currentExtension), ".")
+	if extension == "" {
+		return trimmed
+	}
+	suffix := "." + extension
+	if len(trimmed) <= len(suffix) || !strings.EqualFold(trimmed[len(trimmed)-len(suffix):], suffix) {
+		return trimmed
+	}
+	return trimmed[:len(trimmed)-len(suffix)]
+}
+
+func resolveDriveRenameName(ctx context.Context, nodeID, name string) (string, error) {
+	fileID := nodeID
+	if parsedNodeID := extractNodeIDFromDocURL(nodeID); parsedNodeID != "" {
+		fileID = parsedNodeID
+	}
+	text, err := callMCPToolReturnTextOnServer(ctx, "drive", "get_file_info", map[string]any{
+		"fileId": fileID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("无法读取节点元数据，未执行重命名: %w", err)
+	}
+
+	var response map[string]any
+	if err := json.Unmarshal([]byte(text), &response); err != nil {
+		return "", fmt.Errorf("无法解析节点元数据，未执行重命名: %w", err)
+	}
+	result, ok := response["result"].(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("节点元数据缺少 result，未执行重命名")
+	}
+	return driveRenameBaseName(
+		name,
+		firstStringField(result, "type", "nodeType", "fileType"),
+		firstStringField(result, "extension", "fileExtension", "ext"),
+	), nil
+}
+
 func runDriveUpload(cmd *cobra.Command, _ []string) error {
 	filePath := mustGetFlag(cmd, "file")
 	if filePath == "" {
@@ -834,7 +879,9 @@ func newDriveCommand() *cobra.Command {
 	driveRenameCmd := &cobra.Command{
 		Use:   "rename",
 		Short: "重命名文件/文档",
-		Long: `修改文档空间中文档或文件的名称。
+		Long: `修改文档空间中文档、文件或文件夹的名称。
+实际执行前会读取节点类型和当前扩展名：文件的新名称仅在末尾扩展名与当前扩展名一致时去掉一层，
+避免 report.txt.txt；文件夹和扩展名不匹配的名称保持不变。dry-run 不读取远端元数据，因此保留输入名称。
 
 权限要求: 对文档有"编辑"权限。`,
 		Example: `  dws drive rename --node DOC_ID --name "新名称"`,
@@ -846,14 +893,21 @@ func newDriveCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			newName := flagOrFallback(cmd, "name", "title")
+			if !commandDryRun(cmd) {
+				newName, err = resolveDriveRenameName(cmd.Context(), nodeID, newName)
+				if err != nil {
+					return err
+				}
+			}
 			return callMCPToolOnServer("doc", "rename_document", map[string]any{
 				"nodeId":  nodeID,
-				"newName": flagOrFallback(cmd, "name", "title"),
+				"newName": newName,
 			})
 		},
 	}
 	driveRenameCmd.Flags().String("node", "", "文档/文件 ID 或 URL (必填)")
-	driveRenameCmd.Flags().String("name", "", "新名称 (必填)")
+	driveRenameCmd.Flags().String("name", "", "新名称 (必填；实际执行时仅去掉与节点当前扩展名完全匹配的一层后缀)")
 
 	driveStatsCmd := &cobra.Command{
 		Use:   "stats",
@@ -1383,7 +1437,7 @@ func driveInfoWithDocFallback(fileID string, driveArgs map[string]any) error {
 	ctx := context.Background()
 
 	// Step 1: 调用 drive get_file_info
-	driveText, err := callMCPToolReturnText(ctx, "get_file_info", driveArgs)
+	driveText, err := callMCPToolReturnTextOnServer(ctx, "drive", "get_file_info", driveArgs)
 	if err != nil {
 		return err
 	}
@@ -1444,7 +1498,8 @@ func driveInfoWithDocFallback(fileID string, driveArgs map[string]any) error {
 	driveOnlyFields := []string{"dentryId", "path", "fileSize", "extension", "type"}
 	for _, field := range driveOnlyFields {
 		if val, ok := driveResult[field]; ok {
-			if _, exists := docResult[field]; !exists {
+			current, exists := docResult[field]
+			if (!exists || current == nil) && val != nil {
 				docResult[field] = val
 			}
 		}

@@ -353,6 +353,13 @@ func newRootCommandWithEngine(rootCtx context.Context, engine *pipeline.Engine, 
 			return cmd.Help()
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// Validate the optional observation label before any edition hook
+			// or command network activity can run. Header-only library callers
+			// use the best-effort path in resolveIdentityHeaders instead.
+			if _, err := parseAgentHost(os.Getenv(envDWSAgentHost)); err != nil {
+				return err
+			}
+
 			authpkg.SetRuntimeProfile(flags.Profile)
 			// Apply OAuth credential overrides from CLI flags (highest priority).
 			if flags.ClientID != "" {

@@ -2324,11 +2324,12 @@
       ]
     },
     "todo +remind": {
-      "agent_summary": "给自己创建一条带截止/提醒时间的待办",
+      "agent_summary": "给自己创建一条带可选截止时间的待办",
       "agent_summary_source": "dws-agent-selection/todo",
       "availability": "available",
       "avoid_when": [
-        "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令"
+        "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令",
+        "用户需要独立提醒规则时改用 dws todo task add-reminder；不要把 --at 解释成提醒时间"
       ],
       "confirmation": "user_required",
       "effect": "write",
@@ -2338,14 +2339,14 @@
       ],
       "field_provenance": {
         "agent_summary": {
-          "value": "给自己创建一条带截止/提醒时间的待办",
+          "value": "给自己创建一条带可选截止时间的待办",
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
           "review_reason": "Agent-authored and reviewed from the built-in Shortcut intent, executable Cobra path, and declared outcome; it affects selection only and does not alter execution or safety facts.",
           "candidates": [
             {
-              "value": "给自己创建一条带截止/提醒时间的待办",
+              "value": "给自己创建一条带可选截止时间的待办",
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
               "selected": true,
@@ -2371,7 +2372,8 @@
         },
         "avoid_when": {
           "value": [
-            "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令"
+            "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令",
+            "用户需要独立提醒规则时改用 dws todo task add-reminder；不要把 --at 解释成提醒时间"
           ],
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
@@ -2380,7 +2382,8 @@
           "candidates": [
             {
               "value": [
-                "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令"
+                "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令",
+                "用户需要独立提醒规则时改用 dws todo task add-reminder；不要把 --at 解释成提醒时间"
               ],
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
@@ -2546,7 +2549,7 @@
         },
         "use_when": {
           "value": [
-            "当你想给自己记一件事、并（可选）设一个截止/提醒时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 会按 ISO8601 解析为截止时间。会真实创建待办。"
+            "当你想给自己记一件事、并（可选）设一个截止时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 只会按 ISO8601 写入截止时间 dueTime，不会创建独立提醒规则。会真实创建待办。"
           ],
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
@@ -2555,7 +2558,7 @@
           "candidates": [
             {
               "value": [
-                "当你想给自己记一件事、并（可选）设一个截止/提醒时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 会按 ISO8601 解析为截止时间。会真实创建待办。"
+                "当你想给自己记一件事、并（可选）设一个截止时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 只会按 ISO8601 写入截止时间 dueTime，不会创建独立提醒规则。会真实创建待办。"
               ],
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
@@ -2578,7 +2581,7 @@
         "internal/cli/schema_hints/selection/todo.json"
       ],
       "use_when": [
-        "当你想给自己记一件事、并（可选）设一个截止/提醒时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 会按 ISO8601 解析为截止时间。会真实创建待办。"
+        "当你想给自己记一件事、并（可选）设一个截止时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 只会按 ISO8601 写入截止时间 dueTime，不会创建独立提醒规则。会真实创建待办。"
       ]
     },
     "todo +todo-done": {
@@ -5829,12 +5832,13 @@
       ]
     },
     "todo task add-reminder": {
-      "agent_summary": "添加待办提醒",
+      "agent_summary": "写入一条待办提醒规则（上游不支持规则读回）",
       "agent_summary_source": "dws-agent-selection/todo",
       "availability": "available",
       "avoid_when": [
         "要重置/清除提醒规则时改用 dws todo task reset-reminder",
-        "提醒时间与目标待办未确认时不要添加"
+        "提醒时间与目标待办未确认时不要添加",
+        "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
       ],
       "confirmation": "not_required",
       "effect": "write",
@@ -5845,14 +5849,14 @@
       ],
       "field_provenance": {
         "agent_summary": {
-          "value": "添加待办提醒",
+          "value": "写入一条待办提醒规则（上游不支持规则读回）",
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
           "review_reason": "结合本机 dws schema 实时描述、Skill 与 Cobra 手写选型；pinned schema_mcp_metadata 仅对照。",
           "candidates": [
             {
-              "value": "添加待办提醒",
+              "value": "写入一条待办提醒规则（上游不支持规则读回）",
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
               "selected": true,
@@ -5885,7 +5889,8 @@
         "avoid_when": {
           "value": [
             "要重置/清除提醒规则时改用 dws todo task reset-reminder",
-            "提醒时间与目标待办未确认时不要添加"
+            "提醒时间与目标待办未确认时不要添加",
+            "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
           ],
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
@@ -5895,7 +5900,8 @@
             {
               "value": [
                 "要重置/清除提醒规则时改用 dws todo task reset-reminder",
-                "提醒时间与目标待办未确认时不要添加"
+                "提醒时间与目标待办未确认时不要添加",
+                "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
               ],
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
@@ -6043,7 +6049,7 @@
         },
         "use_when": {
           "value": [
-            "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）"
+            "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）；成功响应仅作为写入回执"
           ],
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
@@ -6052,7 +6058,7 @@
           "candidates": [
             {
               "value": [
-                "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）"
+                "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）；成功响应仅作为写入回执"
               ],
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
@@ -6078,11 +6084,12 @@
         "internal/cli/schema_hints/selection/todo.json",
         "internal/cli/schema_mcp_metadata.json#tools.todo.add_todo_reminder",
         "live-dws-schema:todo.add_todo_reminder",
+        "skills/mono/references/intent-guide.md",
         "skills/mono/references/products/todo.md",
         "structured-hint:internal/cli/schema_hints/selection-review.json#todo.add_todo_reminder"
       ],
       "use_when": [
-        "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）"
+        "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）；成功响应仅作为写入回执"
       ]
     },
     "todo task create": {
@@ -6343,6 +6350,7 @@
         "internal/cli/schema_hints/selection/todo.json",
         "internal/cli/schema_mcp_metadata.json#tools.todo.create_personal_todo",
         "live-dws-schema:todo.create_personal_todo",
+        "skills/mono/references/intent-guide.md",
         "skills/mono/references/products/todo.md",
         "structured-hint:internal/cli/schema_hints/imported/wukong.json#todo.create_personal_todo",
         "structured-hint:internal/cli/schema_hints/selection-review.json#todo.create_personal_todo"
@@ -7183,7 +7191,8 @@
       "availability": "available",
       "avoid_when": [
         "需要按条件查多个待办时改用 dws todo task list",
-        "需要修改待办时改用 update/done/delete 等写命令"
+        "需要修改待办时改用 update/done/delete 等写命令",
+        "需要读取或验证提醒规则时不要使用；当前详情接口不返回 reminderRules"
       ],
       "confirmation": "not_required",
       "effect": "read",
@@ -7234,7 +7243,8 @@
         "avoid_when": {
           "value": [
             "需要按条件查多个待办时改用 dws todo task list",
-            "需要修改待办时改用 update/done/delete 等写命令"
+            "需要修改待办时改用 update/done/delete 等写命令",
+            "需要读取或验证提醒规则时不要使用；当前详情接口不返回 reminderRules"
           ],
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
@@ -7244,7 +7254,8 @@
             {
               "value": [
                 "需要按条件查多个待办时改用 dws todo task list",
-                "需要修改待办时改用 update/done/delete 等写命令"
+                "需要修改待办时改用 update/done/delete 等写命令",
+                "需要读取或验证提醒规则时不要使用；当前详情接口不返回 reminderRules"
               ],
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
@@ -8559,12 +8570,13 @@
       ]
     },
     "todo task reset-reminder": {
-      "agent_summary": "重置待办提醒",
+      "agent_summary": "整体替换或清除待办提醒规则（上游不支持规则读回）",
       "agent_summary_source": "dws-agent-selection/todo",
       "availability": "available",
       "avoid_when": [
         "只需追加一条提醒时改用 dws todo task add-reminder",
-        "新规则与目标待办未确认时不要重置"
+        "新规则与目标待办未确认时不要重置",
+        "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
       ],
       "confirmation": "not_required",
       "effect": "write",
@@ -8575,14 +8587,14 @@
       ],
       "field_provenance": {
         "agent_summary": {
-          "value": "重置待办提醒",
+          "value": "整体替换或清除待办提醒规则（上游不支持规则读回）",
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
           "review_reason": "结合本机 dws schema 实时描述、Skill 与 Cobra 手写选型；pinned schema_mcp_metadata 仅对照。",
           "candidates": [
             {
-              "value": "重置待办提醒",
+              "value": "整体替换或清除待办提醒规则（上游不支持规则读回）",
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
               "selected": true,
@@ -8595,14 +8607,14 @@
           "source": "internal/cli/schema_hints/metadata/todo.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
-          "review_reason": "dws-tool-metadata/todo marks this tool as reviewed",
+          "review_reason": "The reviewed CLI rejects malformed or structurally invalid non-empty reminder rules before the reset mutation, while preserving omission and [] as explicit clear forms.",
           "candidates": [
             {
               "value": "available",
               "source": "internal/cli/schema_hints/metadata/todo.json",
               "precedence": "reviewed_explicit",
               "selected": true,
-              "review_reason": "dws-tool-metadata/todo marks this tool as reviewed"
+              "review_reason": "The reviewed CLI rejects malformed or structurally invalid non-empty reminder rules before the reset mutation, while preserving omission and [] as explicit clear forms."
             },
             {
               "value": "available",
@@ -8615,7 +8627,8 @@
         "avoid_when": {
           "value": [
             "只需追加一条提醒时改用 dws todo task add-reminder",
-            "新规则与目标待办未确认时不要重置"
+            "新规则与目标待办未确认时不要重置",
+            "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
           ],
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
@@ -8625,7 +8638,8 @@
             {
               "value": [
                 "只需追加一条提醒时改用 dws todo task add-reminder",
-                "新规则与目标待办未确认时不要重置"
+                "新规则与目标待办未确认时不要重置",
+                "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
               ],
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
@@ -8703,14 +8717,14 @@
           "source": "internal/cli/schema_hints/metadata/todo.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
-          "review_reason": "dws-tool-metadata/todo marks this tool as reviewed",
+          "review_reason": "The reviewed CLI rejects malformed or structurally invalid non-empty reminder rules before the reset mutation, while preserving omission and [] as explicit clear forms.",
           "candidates": [
             {
               "value": "mcp",
               "source": "internal/cli/schema_hints/metadata/todo.json",
               "precedence": "reviewed_explicit",
               "selected": true,
-              "review_reason": "dws-tool-metadata/todo marks this tool as reviewed"
+              "review_reason": "The reviewed CLI rejects malformed or structurally invalid non-empty reminder rules before the reset mutation, while preserving omission and [] as explicit clear forms."
             },
             {
               "value": "mcp",
@@ -8739,14 +8753,14 @@
           "source": "internal/cli/schema_hints/metadata/todo.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
-          "review_reason": "dws-tool-metadata/todo marks this tool as reviewed",
+          "review_reason": "The reviewed CLI rejects malformed or structurally invalid non-empty reminder rules before the reset mutation, while preserving omission and [] as explicit clear forms.",
           "candidates": [
             {
               "value": true,
               "source": "internal/cli/schema_hints/metadata/todo.json",
               "precedence": "reviewed_explicit",
               "selected": true,
-              "review_reason": "dws-tool-metadata/todo marks this tool as reviewed"
+              "review_reason": "The reviewed CLI rejects malformed or structurally invalid non-empty reminder rules before the reset mutation, while preserving omission and [] as explicit clear forms."
             },
             {
               "value": true,
@@ -8773,7 +8787,7 @@
         },
         "use_when": {
           "value": [
-            "需要清除或整体替换待办提醒规则时（可不传 reminder-rules 以清除）"
+            "需要清除或整体替换待办提醒规则时（不传 reminder-rules 或传 [] 可清除）；非空规则会在远端调用前严格校验，成功响应仅作为写入回执"
           ],
           "source": "internal/cli/schema_hints/selection/todo.json",
           "precedence": "reviewed_explicit",
@@ -8782,7 +8796,7 @@
           "candidates": [
             {
               "value": [
-                "需要清除或整体替换待办提醒规则时（可不传 reminder-rules 以清除）"
+                "需要清除或整体替换待办提醒规则时（不传 reminder-rules 或传 [] 可清除）；非空规则会在远端调用前严格校验，成功响应仅作为写入回执"
               ],
               "source": "internal/cli/schema_hints/selection/todo.json",
               "precedence": "reviewed_explicit",
@@ -8812,7 +8826,7 @@
         "structured-hint:internal/cli/schema_hints/selection-review.json#todo.reset_todo_reminder"
       ],
       "use_when": [
-        "需要清除或整体替换待办提醒规则时（可不传 reminder-rules 以清除）"
+        "需要清除或整体替换待办提醒规则时（不传 reminder-rules 或传 [] 可清除）；非空规则会在远端调用前严格校验，成功响应仅作为写入回执"
       ]
     },
     "todo task update": {

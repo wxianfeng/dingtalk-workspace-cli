@@ -9382,7 +9382,8 @@
       "availability": "available",
       "avoid_when": [
         "已确认是 adoc 且只要正文改用 dws doc read",
-        "只要目录列表改用 dws drive list / wiki node list"
+        "只要目录列表改用 dws drive list / wiki node list",
+        "需要可靠文件大小 fileSize 时改用 dws drive info；文档元信息接口可能不返回大小"
       ],
       "confirmation": "not_required",
       "effect": "read",
@@ -9433,7 +9434,8 @@
         "avoid_when": {
           "value": [
             "已确认是 adoc 且只要正文改用 dws doc read",
-            "只要目录列表改用 dws drive list / wiki node list"
+            "只要目录列表改用 dws drive list / wiki node list",
+            "需要可靠文件大小 fileSize 时改用 dws drive info；文档元信息接口可能不返回大小"
           ],
           "source": "internal/cli/schema_hints/selection/doc.json",
           "precedence": "reviewed_explicit",
@@ -9443,7 +9445,8 @@
             {
               "value": [
                 "已确认是 adoc 且只要正文改用 dws doc read",
-                "只要目录列表改用 dws drive list / wiki node list"
+                "只要目录列表改用 dws drive list / wiki node list",
+                "需要可靠文件大小 fileSize 时改用 dws drive info；文档元信息接口可能不返回大小"
               ],
               "source": "internal/cli/schema_hints/selection/doc.json",
               "precedence": "reviewed_explicit",
@@ -12068,7 +12071,8 @@
       "availability": "available",
       "avoid_when": [
         "改正文标题/章节标题改用 doc block update",
-        "不要用 update 或重新 create 来改名"
+        "不要用 update 或重新 create 来改名",
+        "文件或文件夹重命名优先用 dws drive rename，由该命令读取真实节点类型和当前扩展名"
       ],
       "confirmation": "not_required",
       "effect": "write",
@@ -12118,7 +12122,8 @@
         "avoid_when": {
           "value": [
             "改正文标题/章节标题改用 doc block update",
-            "不要用 update 或重新 create 来改名"
+            "不要用 update 或重新 create 来改名",
+            "文件或文件夹重命名优先用 dws drive rename，由该命令读取真实节点类型和当前扩展名"
           ],
           "source": "internal/cli/schema_hints/selection/doc.json",
           "precedence": "reviewed_explicit",
@@ -12128,7 +12133,8 @@
             {
               "value": [
                 "改正文标题/章节标题改用 doc block update",
-                "不要用 update 或重新 create 来改名"
+                "不要用 update 或重新 create 来改名",
+                "文件或文件夹重命名优先用 dws drive rename，由该命令读取真实节点类型和当前扩展名"
               ],
               "source": "internal/cli/schema_hints/selection/doc.json",
               "precedence": "reviewed_explicit",
@@ -12274,7 +12280,7 @@
         },
         "use_when": {
           "value": [
-            "用户要改文档/文件在列表与链接中展示的名称时"
+            "用户要改在线文档在列表与链接中展示的名称时"
           ],
           "source": "internal/cli/schema_hints/selection/doc.json",
           "precedence": "reviewed_explicit",
@@ -12283,7 +12289,7 @@
           "candidates": [
             {
               "value": [
-                "用户要改文档/文件在列表与链接中展示的名称时"
+                "用户要改在线文档在列表与链接中展示的名称时"
               ],
               "source": "internal/cli/schema_hints/selection/doc.json",
               "precedence": "reviewed_explicit",
@@ -12315,7 +12321,7 @@
         "structured-hint:internal/cli/schema_hints/selection-review.json#doc.rename_document"
       ],
       "use_when": [
-        "用户要改文档/文件在列表与链接中展示的名称时"
+        "用户要改在线文档在列表与链接中展示的名称时"
       ]
     },
     "doc search": {

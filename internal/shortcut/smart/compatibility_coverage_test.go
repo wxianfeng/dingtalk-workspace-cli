@@ -40,6 +40,8 @@ func (f *platformCoverageCaller) CallTool(_ context.Context, product, tool strin
 	switch product + "/" + tool {
 	case "contact/search_contact_by_key_word":
 		text = `{"result":[{"userId":"u1","name":"张三","openDingTalkId":"open1"}]}`
+	case "contact/get_current_user_profile":
+		text = `{"result":{"userId":"u1"}}`
 	case "im/search_groups":
 		text = `{"result":[{"openConversationId":"cid-1","title":"项目冲刺"}]}`
 	}

@@ -545,13 +545,14 @@
       ]
     },
     "drive.rename_document": {
-      "agent_summary": "修改文档空间中文档或文件的名称",
+      "agent_summary": "安全重命名文档空间中的文档、文件或文件夹，并按节点真实扩展名避免双后缀",
       "use_when": [
-        "用户要重命名钉盘/文档空间中的文件或文档显示名称时"
+        "用户要重命名钉盘/文档空间中的文件、文档或文件夹时；实际执行会读取节点类型和当前扩展名，仅去掉完全匹配的一层后缀"
       ],
       "avoid_when": [
         "要改正文里的标题/章节 H1 改用 dws doc block update，不要用 rename",
-        "只要复制或移动改用 copy/move"
+        "只要复制或移动改用 copy/move",
+        "dry-run 不读取节点元数据，输出名称尚未做基于当前扩展名的规范化"
       ],
       "examples": [
         "dws drive rename --node <ID> --name \"新名称\" --format json"

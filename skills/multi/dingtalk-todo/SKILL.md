@@ -39,7 +39,7 @@ metadata:
 | `dws todo +list-comment` | read | 查询待办评论列表 |
 | `dws todo +list-sub` | read | 查询子待办列表 |
 | `dws todo +overdue` | read | 列出我已过期未完成的待办 |
-| `dws todo +remind` | write | 给自己创建一条带截止/提醒时间的待办 |
+| `dws todo +remind` | write | 给自己创建一条带可选截止时间的待办（`--at` 只写 dueTime，不创建提醒规则） |
 | `dws todo +todo-done` | write | 按标题关键词把我的某条待办标记完成（自动定位 taskId） |
 <!-- VISIBLE_SHORTCUTS_END -->
 
@@ -71,6 +71,8 @@ metadata:
 - `--id` / `--ids` 是隐藏兼容别名，文档和生成命令统一写 `--task-id`，减少模型漂移。
 - 优先级映射：低=10，普通=20，较高/高/重要=30，紧急/最高/P0/马上处理=40；不要把"较高"写成 40。
 - 截止时间必须是 ISO-8601。相对日期按当前日期计算；例如周五说"下周二"就是紧接下一个自然周的周二，不要再加一周。
+- 独立提醒使用 `task add-reminder`：`dueTime` 依赖待办已有截止时间，`customTime` 直接传 `--reminder-time-stamp`，不要求先设置 `--due`。隐藏兼容参数 `--remind-at` 不可用。
+- `task reset-reminder` 不传 `--reminder-rules` 或传 `[]` 表示清除；其他显式值必须是合法对象数组并通过模式字段校验，非法输入禁止发出远端调用。
 - 附件命令 `task add-attachment` / `list-attachment` / `remove-attachment` 均可用：`add-attachment --task-id <taskId> --file-path <本地文件>`（真实上传，先确认待办存在，返回 `result.attachmentIds`）；`list-attachment --task-id <taskId>`（返回顶层 `attachments[].attachmentId`）；`remove-attachment --task-id <taskId> --attachment-id <id> --yes`（不可逆，先确认）。
 - `tag add` 只是把标签关联到任务；`tag delete` 删除标签定义且不可恢复，必须先确认再加 `--yes`。`tag add` 最多传 2 个标签编码。
 - 创建、标记完成、重开、删除后必须 `task get` 或对应 `task list --status ...` 验证，不要只凭创建返回或口头计划结束。

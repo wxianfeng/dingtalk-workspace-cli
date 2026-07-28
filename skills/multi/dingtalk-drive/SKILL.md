@@ -55,7 +55,7 @@ metadata:
 | "上传本地文件" | `dws drive upload --file ./report.pdf [--folder <fileId>]` |
 | "覆盖钉盘或知识库里的已有文件" | `dws drive upload --file ./updated.pdf --node <fileId> --dry-run`，确认后加 `--yes` |
 | "建文件夹" | `dws drive mkdir --name "<名称>" [--folder <fileId>]` |
-| "复制 / 移动 / 重命名" | `dws drive copy` / `move` / `rename --node <fileId> --name "<主名>"` |
+| "复制 / 移动 / 重命名" | `dws drive copy` / `move` / `rename --node <fileId> --name "<新名称>"` |
 | "删除文件 / 移到回收站（需确认）" | `dws drive delete --node <fileId> --yes` |
 | "回收站 / 还原" | `dws drive recycle list` / `recycle restore --id <recycleItemId>` |
 | "公开 / 取消公开 / 查公开状态" | `dws drive publish set` / `unset` / `get --node <fileId>` |
@@ -65,7 +65,7 @@ metadata:
 - 找文件优先用 `drive search --query "<关键词>"`（不知道位置时全局搜）；只有需要逐层浏览时才用 `drive list`。命中后必须 `drive info --node <fileId> --format json` 回读元数据。
 - **ID 字段选择**：`drive list` 返回同时有 `dentryId`（纯数字）和 `fileId`（UUID 格式）。所有 `--node` 和 `--folder` 参数**必须用 `fileId`**，纯数字 `dentryId` 会被拒绝。
 - `drive list` 默认 `--limit 20`，最大 50；要更多用 `--cursor` 翻页，不要因参数边界报错反复重试。
-- `rename` 的 `--name` **只传主名，不带扩展名**；服务端会按原扩展名自动补后缀，带了扩展名会变成双扩展名（如 `报告.txt` → `报告.txt.txt`）。
+- `rename` 实际执行前读取节点类型和当前扩展名；仅对非文件夹且末尾后缀与当前扩展名完全匹配的名称去掉一层，避免双扩展名。带点文件夹名保持原样；`--dry-run` 不读取元数据，预览保留输入名称。
 - `drive download` 需要 `--output` 指定本地保存路径或目录；不要省略必填输出位置。
 - 删除、覆盖、移动、公开（publish set/unset）等破坏性操作必须先确认；上传、创建文件夹、下载后要读回或列目录验证。
 - `drive upload --node <fileId>` 覆盖已有文件，`--node` 与新建文件使用的 `--folder` 互斥；先 `--dry-run`，获得明确确认后再加 `--yes`。

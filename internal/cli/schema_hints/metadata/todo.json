@@ -126,7 +126,14 @@
     "todo.reset_todo_reminder": {
       "interface_mode": "mcp",
       "availability": "available",
-      "reviewed": true
+      "reviewed": true,
+      "parameters": {
+        "reminder-rules": {
+          "description": "提醒规则 JSON 数组；不传表示清除，显式传值必须为对象数组，且每条按 baseTime 提供整数 dueDateOffset 或 ISO8601 reminderTimeStamp"
+        }
+      },
+      "review_reason": "The reviewed CLI rejects malformed or structurally invalid non-empty reminder rules before the reset mutation, while preserving omission and [] as explicit clear forms.",
+      "cli_path": "todo task reset-reminder"
     },
     "todo.update_todo_done_status": {
       "interface_mode": "mcp",

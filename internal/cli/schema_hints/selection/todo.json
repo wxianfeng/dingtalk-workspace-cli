@@ -103,13 +103,14 @@
       ]
     },
     "todo.add_todo_reminder": {
-      "agent_summary": "添加待办提醒",
+      "agent_summary": "写入一条待办提醒规则（上游不支持规则读回）",
       "use_when": [
-        "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）"
+        "已知 taskId，需要按截止时间偏移或自定义时间戳添加提醒时（dueTime 模式要求待办已有截止时间）；成功响应仅作为写入回执"
       ],
       "avoid_when": [
         "要重置/清除提醒规则时改用 dws todo task reset-reminder",
-        "提醒时间与目标待办未确认时不要添加"
+        "提醒时间与目标待办未确认时不要添加",
+        "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
       ],
       "examples": [
         "dws todo task add-reminder --task-id <taskId> --base-time dueTime --due-date-offset -30",
@@ -224,7 +225,8 @@
       ],
       "avoid_when": [
         "需要按条件查多个待办时改用 dws todo task list",
-        "需要修改待办时改用 update/done/delete 等写命令"
+        "需要修改待办时改用 update/done/delete 等写命令",
+        "需要读取或验证提醒规则时不要使用；当前详情接口不返回 reminderRules"
       ],
       "examples": [
         "dws todo task get --task-id <taskId>",
@@ -356,13 +358,14 @@
       ]
     },
     "todo.reset_todo_reminder": {
-      "agent_summary": "重置待办提醒",
+      "agent_summary": "整体替换或清除待办提醒规则（上游不支持规则读回）",
       "use_when": [
-        "需要清除或整体替换待办提醒规则时（可不传 reminder-rules 以清除）"
+        "需要清除或整体替换待办提醒规则时（不传 reminder-rules 或传 [] 可清除）；非空规则会在远端调用前严格校验，成功响应仅作为写入回执"
       ],
       "avoid_when": [
         "只需追加一条提醒时改用 dws todo task add-reminder",
-        "新规则与目标待办未确认时不要重置"
+        "新规则与目标待办未确认时不要重置",
+        "业务要求写后读取并核验 reminderRules 时不要声称可验证；当前 task get/list 均不返回提醒规则"
       ],
       "examples": [
         "dws todo task reset-reminder --task-id <taskId>",
@@ -603,12 +606,13 @@
       ]
     },
     "todo.shortcut_remind": {
-      "agent_summary": "给自己创建一条带截止/提醒时间的待办",
+      "agent_summary": "给自己创建一条带可选截止时间的待办",
       "use_when": [
-        "当你想给自己记一件事、并（可选）设一个截止/提醒时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 会按 ISO8601 解析为截止时间。会真实创建待办。"
+        "当你想给自己记一件事、并（可选）设一个截止时间，又不想先查自己的 userId 时使用；内部先解析当前登录用户的 userId，再显式设置 executorIds，--at 只会按 ISO8601 写入截止时间 dueTime，不会创建独立提醒规则。会真实创建待办。"
       ],
       "avoid_when": [
-        "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令"
+        "需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令",
+        "用户需要独立提醒规则时改用 dws todo task add-reminder；不要把 --at 解释成提醒时间"
       ],
       "examples": [
         "dws todo +remind --task \"交周报\" --at 2026-03-10T18:00:00+08:00"

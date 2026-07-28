@@ -1038,6 +1038,14 @@ func resolveIdentityHeaders() map[string]string {
 		headers["x-dws-channel"] = v
 	}
 
+	// DWS_AGENT_HOST is a caller-provided observation label only. Root command
+	// execution validates it strictly in PersistentPreRunE. Library callers
+	// that bypass the root command keep this best-effort API contract: invalid
+	// values are omitted rather than changing the public function signature.
+	if agentHost, err := parseAgentHost(os.Getenv(envDWSAgentHost)); err == nil && agentHost != "" {
+		headers[headerDWSAgentHost] = agentHost
+	}
+
 	if fn := edition.Get().MergeHeaders; fn != nil {
 		headers = fn(headers)
 	}

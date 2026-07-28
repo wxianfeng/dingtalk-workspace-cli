@@ -7083,12 +7083,13 @@
       ]
     },
     "drive rename": {
-      "agent_summary": "修改文档空间中文档或文件的名称",
+      "agent_summary": "安全重命名文档空间中的文档、文件或文件夹，并按节点真实扩展名避免双后缀",
       "agent_summary_source": "dws-agent-selection/drive",
       "availability": "available",
       "avoid_when": [
         "要改正文里的标题/章节 H1 改用 dws doc block update，不要用 rename",
-        "只要复制或移动改用 copy/move"
+        "只要复制或移动改用 copy/move",
+        "dry-run 不读取节点元数据，输出名称尚未做基于当前扩展名的规范化"
       ],
       "confirmation": "not_required",
       "effect": "write",
@@ -7098,14 +7099,14 @@
       ],
       "field_provenance": {
         "agent_summary": {
-          "value": "修改文档空间中文档或文件的名称",
+          "value": "安全重命名文档空间中的文档、文件或文件夹，并按节点真实扩展名避免双后缀",
           "source": "internal/cli/schema_hints/selection/drive.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
           "review_reason": "人工审阅：结合本机 dws schema 实时 MCP description/parameters（经 interface_ref）、产品 Skill、Cobra Long 与 Runtime 确认门禁，按飞书风格重写选型文案；不改变命令身份、参数契约或接口绑定。",
           "candidates": [
             {
-              "value": "修改文档空间中文档或文件的名称",
+              "value": "安全重命名文档空间中的文档、文件或文件夹，并按节点真实扩展名避免双后缀",
               "source": "internal/cli/schema_hints/selection/drive.json",
               "precedence": "reviewed_explicit",
               "selected": true,
@@ -7118,14 +7119,14 @@
           "source": "internal/cli/schema_hints/metadata/drive.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
-          "review_reason": "dws-tool-metadata/drive marks this tool as reviewed",
+          "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist.",
           "candidates": [
             {
               "value": "available",
               "source": "internal/cli/schema_hints/metadata/drive.json",
               "precedence": "reviewed_explicit",
               "selected": true,
-              "review_reason": "dws-tool-metadata/drive marks this tool as reviewed"
+              "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist."
             },
             {
               "value": "available",
@@ -7138,7 +7139,8 @@
         "avoid_when": {
           "value": [
             "要改正文里的标题/章节 H1 改用 dws doc block update，不要用 rename",
-            "只要复制或移动改用 copy/move"
+            "只要复制或移动改用 copy/move",
+            "dry-run 不读取节点元数据，输出名称尚未做基于当前扩展名的规范化"
           ],
           "source": "internal/cli/schema_hints/selection/drive.json",
           "precedence": "reviewed_explicit",
@@ -7148,7 +7150,8 @@
             {
               "value": [
                 "要改正文里的标题/章节 H1 改用 dws doc block update，不要用 rename",
-                "只要复制或移动改用 copy/move"
+                "只要复制或移动改用 copy/move",
+                "dry-run 不读取节点元数据，输出名称尚未做基于当前扩展名的规范化"
               ],
               "source": "internal/cli/schema_hints/selection/drive.json",
               "precedence": "reviewed_explicit",
@@ -7224,14 +7227,14 @@
           "source": "internal/cli/schema_hints/metadata/drive.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
-          "review_reason": "dws-tool-metadata/drive marks this tool as reviewed",
+          "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist.",
           "candidates": [
             {
               "value": "mcp",
               "source": "internal/cli/schema_hints/metadata/drive.json",
               "precedence": "reviewed_explicit",
               "selected": true,
-              "review_reason": "dws-tool-metadata/drive marks this tool as reviewed"
+              "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist."
             },
             {
               "value": "mcp",
@@ -7246,14 +7249,14 @@
           "source": "internal/cli/schema_hints/metadata/drive.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
-          "review_reason": "dws-tool-metadata/drive marks this tool as reviewed",
+          "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist.",
           "candidates": [
             {
               "value": "doc.rename_document",
               "source": "internal/cli/schema_hints/metadata/drive.json",
               "precedence": "reviewed_explicit",
               "selected": true,
-              "review_reason": "dws-tool-metadata/drive marks this tool as reviewed"
+              "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist."
             },
             {
               "value": "doc.rename_document",
@@ -7268,14 +7271,14 @@
           "source": "internal/cli/schema_hints/metadata/drive.json",
           "precedence": "reviewed_explicit",
           "resolution": "highest_precedence",
-          "review_reason": "dws-tool-metadata/drive marks this tool as reviewed",
+          "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist.",
           "candidates": [
             {
               "value": true,
               "source": "internal/cli/schema_hints/metadata/drive.json",
               "precedence": "reviewed_explicit",
               "selected": true,
-              "review_reason": "dws-tool-metadata/drive marks this tool as reviewed"
+              "review_reason": "The reviewed CLI reads node metadata before mutation and strips only the exact current extension for non-folder nodes, avoiding both duplicate extensions and dotted-folder corruption without a suffix whitelist."
             },
             {
               "value": true,
@@ -7302,7 +7305,7 @@
         },
         "use_when": {
           "value": [
-            "用户要重命名钉盘/文档空间中的文件或文档显示名称时"
+            "用户要重命名钉盘/文档空间中的文件、文档或文件夹时；实际执行会读取节点类型和当前扩展名，仅去掉完全匹配的一层后缀"
           ],
           "source": "internal/cli/schema_hints/selection/drive.json",
           "precedence": "reviewed_explicit",
@@ -7311,7 +7314,7 @@
           "candidates": [
             {
               "value": [
-                "用户要重命名钉盘/文档空间中的文件或文档显示名称时"
+                "用户要重命名钉盘/文档空间中的文件、文档或文件夹时；实际执行会读取节点类型和当前扩展名，仅去掉完全匹配的一层后缀"
               ],
               "source": "internal/cli/schema_hints/selection/drive.json",
               "precedence": "reviewed_explicit",
@@ -7342,7 +7345,7 @@
         "structured-hint:internal/cli/schema_hints/selection-review.json#drive.rename_document"
       ],
       "use_when": [
-        "用户要重命名钉盘/文档空间中的文件或文档显示名称时"
+        "用户要重命名钉盘/文档空间中的文件、文档或文件夹时；实际执行会读取节点类型和当前扩展名，仅去掉完全匹配的一层后缀"
       ]
     },
     "drive search": {

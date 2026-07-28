@@ -5,6 +5,7 @@
 | Variable | Purpose / 用途 |
 |---------|---------|
 | `DWS_CONFIG_DIR` | Override default config directory / 覆盖默认配置目录 |
+| `DWS_AGENT_HOST` | Optional Agent host observation label sent as `x-dws-agent-host` (for example `qwenwork_cloud`). Values are trimmed and must match `^[a-z0-9][a-z0-9_-]*$`; unset values are omitted. Used only for logs and BI, never for authentication or routing. / 可选 Agent 宿主观测标识，经裁剪并校验后作为 `x-dws-agent-host` 发送；仅用于日志与 BI，不参与鉴权或路由 |
 | `DWS_<PRODUCT>_MCP_URL` | Override a product MCP endpoint for local development / 本地开发时覆盖指定产品 MCP endpoint |
 | `DWS_CLIENT_ID` | OAuth client ID (DingTalk AppKey) |
 | `DWS_CLIENT_SECRET` | OAuth client secret (DingTalk AppSecret) |
