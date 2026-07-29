@@ -15,6 +15,7 @@ package smart
 
 import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut/chatmsg"
 )
 
 // ThreadReplies: fetch every reply under one topic ("话题") message and print a
@@ -31,26 +32,35 @@ import (
 // Read-only: it only reads a topic's replies and reshapes them locally, never
 // posts or mutates anything.
 //
-//	dws chat +thread-replies --group <openconversationId> --topic-id <topicId>
+//	dws chat +thread-replies --group <openconversationId> --thread-id <threadId>
 var ThreadReplies = shortcut.Shortcut{
 	Service:     "chat",
 	Command:     "+thread-replies",
 	Product:     "chat",
 	Description: "拉取某条话题消息的全部回复并投影出发言人/文本/时间",
-	Intent: "当你已经拿到某个群里一条「话题消息」的 topicId、想快速看这条话题下的全部回复（谁在什么时间回复了什么），" +
-		"而不想拿到一大坨原始消息字段时使用；内部按 --group（群会话 ID）和 --topic-id（话题 ID）拉取该话题的回复列表，" +
+	Intent: "当你已经拿到某个群里一条「话题消息」的 threadId/topicId、想快速看这条话题下的全部回复（谁在什么时间回复了什么），" +
+		"而不想拿到一大坨原始消息字段时使用；内部按 --group（群会话 ID）和 --thread-id（兼容 --topic-id）拉取该话题的回复列表，" +
 		"可选 --time 指定起始时间、--limit 指定每页条数，再在本地投影出每条回复的发言人、文本和回复时间。" +
 		"这是纯只读操作，只做拉取与本地投影，不会发送或修改任何消息。",
 	Risk: shortcut.RiskRead,
 	Flags: []shortcut.Flag{
 		{Name: "group", Type: shortcut.FlagString, Desc: "群会话 ID（openConversationId，必填）", Required: true},
-		{Name: "topic-id", Type: shortcut.FlagString, Desc: "话题 ID（由 dws chat message list 返回，必填）", Required: true},
+		{Name: "thread-id", Type: shortcut.FlagString, Desc: "话题/线程 ID（可直接使用消息列表返回的 threadId）"},
+		{Name: "topic-id", Type: shortcut.FlagString, Desc: "--thread-id 的兼容别名"},
 		{Name: "time", Type: shortcut.FlagString, Desc: "起始时间，如 \"2025-03-01 00:00:00\"（可选）"},
 		{Name: "limit", Type: shortcut.FlagInt, Desc: "每页拉取的回复条数（可选）"},
+		{Name: "no-reactions", Type: shortcut.FlagBool, Desc: "不输出回复 reaction（默认输出）"},
+	},
+	Constraints: []shortcut.Constraint{
+		{
+			Kind:        shortcut.ConstraintExactlyOne,
+			Flags:       []string{"thread-id", "topic-id"},
+			Description: "--thread-id 与兼容参数 --topic-id 必须且只能指定一个",
+		},
 	},
 	Tips: []string{
-		`dws chat +thread-replies --group <openconversationId> --topic-id <topicId>`,
-		`dws chat +thread-replies --group <openconversationId> --topic-id <topicId> --time "2025-03-01 00:00:00" --limit 20`,
+		`dws chat +thread-replies --group <openconversationId> --thread-id <threadId>`,
+		`dws chat +thread-replies --group <openconversationId> --thread-id <threadId> --time "2025-03-01 00:00:00" --limit 20`,
 	},
 	Execute: func(rt *shortcut.RuntimeContext) error {
 		// Step 1 — fetch the topic replies. Param keys (openconversationId /
@@ -58,7 +68,7 @@ var ThreadReplies = shortcut.Shortcut{
 		// list-topic-replies call site.
 		params := map[string]any{
 			"openconversationId": rt.Str("group"),
-			"topicId":            rt.Str("topic-id"),
+			"topicId":            rt.StrFirst("thread-id", "topic-id"),
 			"forward":            false,
 		}
 		if rt.Changed("time") && rt.Str("time") != "" {
@@ -78,13 +88,15 @@ var ThreadReplies = shortcut.Shortcut{
 		items := threadReplyItems(data)
 		results := make([]map[string]any, 0, len(items))
 		for _, m := range items {
-			results = append(results, projectChatMessage(m))
+			results = append(results, projectChatMessageWithReactions(m, !rt.Bool("no-reactions")))
 		}
 
-		return rt.Output(map[string]any{
+		payload := map[string]any{
 			"replies": results,
 			"count":   len(results),
-		})
+		}
+		chatmsg.ApplyMessagePagination(payload, data, items, "older")
+		return rt.Output(payload)
 	},
 }
 

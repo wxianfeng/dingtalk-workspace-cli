@@ -15,6 +15,9 @@ package chat
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut/chatmsg"
@@ -214,6 +217,7 @@ var MessagesList = shortcut.Shortcut{
 		{Name: "forward", Type: shortcut.FlagBool, Default: "true", Desc: "true=从给定时间往现在拉，false=往以前拉"},
 		{Name: "limit", Type: shortcut.FlagInt, Desc: "每页返回数量"},
 		{Name: "size", Type: shortcut.FlagInt, Desc: "--limit 的旧版别名", Hidden: true},
+		{Name: "no-reactions", Type: shortcut.FlagBool, Desc: "不输出消息 reaction（默认输出）"},
 	},
 	Constraints: []shortcut.Constraint{
 		{Kind: shortcut.ConstraintExactlyOne, Flags: []string{"group", "conversation-id", "id"}},
@@ -233,8 +237,14 @@ var MessagesList = shortcut.Shortcut{
 		if err != nil {
 			return err
 		}
-		messages := listMessagesProject(data)
-		return rt.Output(map[string]any{"count": len(messages), "messages": messages})
+		messages := listMessagesProjectWithReactions(data, !rt.Bool("no-reactions"))
+		payload := map[string]any{"count": len(messages), "messages": messages}
+		direction := "older"
+		if rt.Bool("forward") {
+			direction = "newer"
+		}
+		chatmsg.ApplyMessagePagination(payload, data, listMessagesResolveMaps(data), direction)
+		return rt.Output(payload)
 	},
 }
 
@@ -249,6 +259,10 @@ var MessagesList = shortcut.Shortcut{
 // records ("聊天记录") expand their nested messages under "forwarded" instead of
 // collapsing to a "[卡片]" summary.
 func listMessagesProject(data map[string]any) []map[string]any {
+	return listMessagesProjectWithReactions(data, true)
+}
+
+func listMessagesProjectWithReactions(data map[string]any, includeReactions bool) []map[string]any {
 	raw := listMessagesResolveList(data)
 	out := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
@@ -256,7 +270,7 @@ func listMessagesProject(data map[string]any) []map[string]any {
 		if !ok {
 			continue
 		}
-		if row := listMessageProjectOne(m); len(row) > 0 {
+		if row := listMessageProjectOneWithReactions(m, includeReactions); len(row) > 0 {
 			out = append(out, row)
 		}
 	}
@@ -267,6 +281,10 @@ func listMessagesProject(data map[string]any) []map[string]any {
 // {messageId, senderId, msgType, createTime, text(, forwarded)} shape, reused
 // recursively for forwarded chat records.
 func listMessageProjectOne(m map[string]any) map[string]any {
+	return listMessageProjectOneWithReactions(m, true)
+}
+
+func listMessageProjectOneWithReactions(m map[string]any, includeReactions bool) map[string]any {
 	row := map[string]any{}
 	if v, ok := listMessagesFirst(m, "openMessageId", "openMsgId", "messageId", "msgId"); ok {
 		row["messageId"] = v
@@ -283,7 +301,30 @@ func listMessageProjectOne(m map[string]any) map[string]any {
 	if text := chatmsg.Text(m); text != nil {
 		row["text"] = text
 	}
-	if forwarded := chatmsg.Forwarded(m, listMessageProjectOne); len(forwarded) > 0 {
+	if conversationID := chatmsg.ConversationID(m); conversationID != nil {
+		row["conversationId"] = conversationID
+	}
+	if threadID := chatmsg.ThreadID(m); threadID != nil {
+		row["threadId"] = threadID
+	}
+	if updateTime := chatmsg.UpdateTime(m); updateTime != nil {
+		row["updateTime"] = updateTime
+	}
+	if includeReactions {
+		if reactions := chatmsg.Reactions(m); len(reactions) > 0 {
+			row["reactions"] = reactions
+		}
+	}
+	if quoted := chatmsg.QuotedMessage(m); len(quoted) > 0 {
+		row["quotedMessage"] = quoted
+	}
+	if resources := chatmsg.Resources(m); len(resources) > 0 {
+		row["resourceRefs"] = resources
+	}
+	projectForwarded := func(item map[string]any) map[string]any {
+		return listMessageProjectOneWithReactions(item, includeReactions)
+	}
+	if forwarded := chatmsg.Forwarded(m, projectForwarded); len(forwarded) > 0 {
 		row["forwarded"] = forwarded
 	}
 	return row
@@ -311,6 +352,17 @@ func listMessagesResolveList(data map[string]any) []any {
 	return []any{}
 }
 
+func listMessagesResolveMaps(data map[string]any) []map[string]any {
+	raw := listMessagesResolveList(data)
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if message, ok := item.(map[string]any); ok {
+			out = append(out, message)
+		}
+	}
+	return out
+}
+
 // listMessagesFirst returns the first present candidate key's value.
 func listMessagesFirst(m map[string]any, keys ...string) (any, bool) {
 	for _, k := range keys {
@@ -335,6 +387,7 @@ var MessagesListDirect = shortcut.Shortcut{
 		{Name: "forward", Type: shortcut.FlagBool, Default: "true", Desc: "true=往现在拉，false=往以前拉"},
 		{Name: "limit", Type: shortcut.FlagInt, Desc: "每页返回数量"},
 		{Name: "size", Type: shortcut.FlagInt, Desc: "--limit 的旧版别名", Hidden: true},
+		{Name: "no-reactions", Type: shortcut.FlagBool, Desc: "不输出消息 reaction（默认输出）"},
 	},
 	Tips: []string{`dws chat +messages-list-direct --user <userId> --time "2025-03-01 00:00:00"`},
 	Execute: func(rt *shortcut.RuntimeContext) error {
@@ -357,8 +410,14 @@ var MessagesListDirect = shortcut.Shortcut{
 		if err != nil {
 			return err
 		}
-		messages := listMessagesProject(data)
-		return rt.Output(map[string]any{"count": len(messages), "messages": messages})
+		messages := listMessagesProjectWithReactions(data, !rt.Bool("no-reactions"))
+		payload := map[string]any{"count": len(messages), "messages": messages}
+		direction := "older"
+		if rt.Bool("forward") {
+			direction = "newer"
+		}
+		chatmsg.ApplyMessagePagination(payload, data, listMessagesResolveMaps(data), direction)
+		return rt.Output(payload)
 	},
 }
 
@@ -466,15 +525,183 @@ var MessagesMget = shortcut.Shortcut{
 	Command:     "+messages-mget",
 	Product:     "im",
 	Description: "根据消息 ID 批量查询消息（最多 50 条）",
-	Intent:      "当你已有一批消息 openMsgId、需要批量取回它们的详细内容时使用；只读，一次最多查询 50 条。",
+	Intent:      "当你已有一批消息 openMsgId、需要批量取回完整详情、reaction 和可执行资源引用时使用；一次最多 50 条。--download-resources 可把所有可识别 mediaId 安全下载到工作目录内，并逐资源返回成功/失败 ledger。",
 	Risk:        shortcut.RiskRead,
 	Flags: []shortcut.Flag{
-		{Name: "msg-ids", Type: shortcut.FlagStringSlice, Desc: "消息 openMsgId 列表", Required: true},
+		{Name: "msg-ids", Type: shortcut.FlagStringSlice, Desc: "消息 openMsgId 列表；--msg-ids 去重后必须包含 1-50 条消息 ID", Required: true},
+		{Name: "no-reactions", Type: shortcut.FlagBool, Desc: "不输出消息 reaction（默认输出）"},
+		{Name: "download-resources", Type: shortcut.FlagBool, Desc: "自动下载消息中的全部可识别 mediaId 资源"},
+		{Name: "output-dir", Type: shortcut.FlagString, Default: "./downloads", Desc: "资源输出目录；--output-dir 必须是工作目录内的相对路径，不允许绝对路径或 .. 逃逸"},
+		{Name: "overwrite", Type: shortcut.FlagBool, Desc: "允许覆盖同名资源文件（默认拒绝）"},
+	},
+	Constraints: []shortcut.Constraint{
+		{
+			Kind:        shortcut.ConstraintCustom,
+			Flags:       []string{"msg-ids"},
+			Description: "--msg-ids 去重后必须包含 1-50 条消息 ID",
+		},
+		{
+			Kind:        shortcut.ConstraintCustom,
+			Flags:       []string{"output-dir"},
+			Description: "--output-dir 必须是工作目录内的相对路径，不允许绝对路径或 .. 逃逸",
+		},
 	},
 	Tips: []string{`dws chat +messages-mget --msg-ids msgId1,msgId2`},
-	Execute: func(rt *shortcut.RuntimeContext) error {
-		return rt.CallMCP("list_messages_by_ids", map[string]any{"openMsgIds": rt.StrSlice("msg-ids")})
+	Validate: func(rt *shortcut.RuntimeContext) error {
+		ids := uniqueShortcutStrings(rt.StrSlice("msg-ids"))
+		if len(ids) < 1 || len(ids) > 50 {
+			return fmt.Errorf("--msg-ids 去重后必须包含 1-50 条消息 ID，当前 %d 条", len(ids))
+		}
+		if rt.Bool("download-resources") {
+			if err := validateResourceDownloadOutputFlag(rt.Str("output-dir"), "--output-dir"); err != nil {
+				return err
+			}
+		}
+		return nil
 	},
+	Execute: func(rt *shortcut.RuntimeContext) error {
+		ids := uniqueShortcutStrings(rt.StrSlice("msg-ids"))
+		data, err := rt.CallMCPData("im", "list_messages_by_ids", map[string]any{"openMsgIds": ids})
+		if err != nil {
+			return err
+		}
+		rawMessages := listMessagesResolveMaps(data)
+		messages := listMessagesProjectWithReactions(data, !rt.Bool("no-reactions"))
+		found := map[string]bool{}
+		for _, message := range rawMessages {
+			if id := strings.TrimSpace(fmt.Sprint(chatmsg.MessageID(message))); id != "" && id != "<nil>" {
+				found[id] = true
+			}
+		}
+		notFound := make([]string, 0)
+		for _, id := range ids {
+			if !found[id] {
+				notFound = append(notFound, id)
+			}
+		}
+		payload := map[string]any{
+			"requestedCount":     len(ids),
+			"foundCount":         len(ids) - len(notFound),
+			"notFoundCount":      len(notFound),
+			"notFoundMessageIds": notFound,
+			"messages":           messages,
+		}
+		if rt.Bool("download-resources") {
+			ledger, err := downloadMgetResources(rt, rawMessages)
+			if err != nil {
+				return err
+			}
+			payload["resourceDownloads"] = ledger
+		}
+		return rt.Output(payload)
+	},
+}
+
+func downloadMgetResources(rt *shortcut.RuntimeContext, messages []map[string]any) (map[string]any, error) {
+	resources := make([]map[string]any, 0)
+	for _, message := range messages {
+		resources = append(resources, chatmsg.Resources(message)...)
+	}
+	if rt.DryRun() {
+		return map[string]any{
+			"dryRun":         true,
+			"requestedCount": len(resources),
+			"resources":      resources,
+		}, nil
+	}
+
+	cwd, err := resourceGetwd()
+	if err != nil {
+		return nil, fmt.Errorf("读取工作目录失败: %w", err)
+	}
+	outputDir := strings.TrimRight(rt.Str("output-dir"), `/\`) + string(os.PathSeparator)
+	downloads := make([]map[string]any, 0, len(resources))
+	failures := make([]map[string]any, 0)
+	for _, resource := range resources {
+		resourceID := strings.TrimSpace(fmt.Sprint(resource["resourceId"]))
+		download, _ := resource["download"].(map[string]any)
+		arguments, _ := download["arguments"].(map[string]any)
+		messageID := strings.TrimSpace(fmt.Sprint(arguments["message-id"]))
+		conversationID := strings.TrimSpace(fmt.Sprint(arguments["open-conversation-id"]))
+		if download["ready"] != true || resourceID == "" || messageID == "" || conversationID == "" {
+			failures = append(failures, map[string]any{
+				"resourceId": resourceID,
+				"messageId":  messageID,
+				"error":      "资源引用缺少 message-id 或 open-conversation-id",
+			})
+			continue
+		}
+
+		data, callErr := rt.CallMCPData("im", "get_resource_download_url", map[string]any{
+			"resourceType":       "mediaId",
+			"resourceId":         resourceID,
+			"openMessageId":      messageID,
+			"openConversationId": conversationID,
+		})
+		if callErr != nil {
+			failures = append(failures, map[string]any{
+				"resourceId": resourceID,
+				"messageId":  messageID,
+				"error":      callErr.Error(),
+			})
+			continue
+		}
+		resourceURL, headers, infoErr := resourceDownloadInfo(data)
+		if infoErr != nil {
+			failures = append(failures, map[string]any{
+				"resourceId": resourceID,
+				"messageId":  messageID,
+				"error":      infoErr.Error(),
+			})
+			continue
+		}
+		destPath, relativePath, pathErr := resolveResourceDownloadPath(
+			cwd, outputDir, resourceURL, rt.Bool("overwrite"))
+		if pathErr != nil {
+			failures = append(failures, map[string]any{
+				"resourceId": resourceID,
+				"messageId":  messageID,
+				"error":      pathErr.Error(),
+			})
+			continue
+		}
+		size, downloadErr := resourceDownload(
+			rt.Command().Context(), nil, resourceURL, headers, destPath, rt.Bool("overwrite"))
+		if downloadErr != nil {
+			failures = append(failures, map[string]any{
+				"resourceId": resourceID,
+				"messageId":  messageID,
+				"error":      downloadErr.Error(),
+			})
+			continue
+		}
+		downloads = append(downloads, map[string]any{
+			"resourceId": resourceID,
+			"messageId":  messageID,
+			"localPath":  filepath.ToSlash(relativePath),
+			"sizeBytes":  size,
+		})
+	}
+	return map[string]any{
+		"ok":              len(failures) == 0,
+		"partial":         len(downloads) > 0 && len(failures) > 0,
+		"requestedCount":  len(resources),
+		"downloadedCount": len(downloads),
+		"failedCount":     len(failures),
+		"downloads":       downloads,
+		"failures":        failures,
+	}, nil
+}
+
+func uniqueShortcutStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = appendUniqueShortcutString(out, value)
+		}
+	}
+	return out
 }
 
 // MessagesQuerySendStatus queries send status of a message (query_message_send_status, im).
@@ -730,15 +957,24 @@ var MessagesResourceURL = shortcut.Shortcut{
 	Flags: []shortcut.Flag{
 		{Name: "type", Type: shortcut.FlagString, Default: "mediaId", Desc: "资源类型", Enum: []string{"mediaId"}},
 		{Name: "resource-id", Type: shortcut.FlagString, Desc: "资源 ID（消息中的 mediaId）", Required: true},
-		{Name: "message-id", Type: shortcut.FlagString, Desc: "消息 openMessageId", Required: true},
+		{Name: "message-id", Type: shortcut.FlagString, Desc: "消息 openMessageId"},
+		{Name: "msg-id", Type: shortcut.FlagString, Desc: "--message-id 的别名", Hidden: true},
+		{Name: "open-message-id", Type: shortcut.FlagString, Desc: "--message-id 的别名", Hidden: true},
 		{Name: "open-conversation-id", Type: shortcut.FlagString, Desc: "会话 openConversationId", Required: true},
+	},
+	// message-id is required, but accept the natural aliases agents reach for
+	// (the message-list output field is openMessageId/msgId). Declared via a
+	// constraint rather than Required because a shortcut's Required check only
+	// looks at the primary flag name, so a hidden alias could not satisfy it.
+	Constraints: []shortcut.Constraint{
+		{Kind: shortcut.ConstraintAtLeastOne, Flags: []string{"message-id", "msg-id", "open-message-id"}},
 	},
 	Tips: []string{`dws chat +messages-resource-url --type mediaId --resource-id <mediaId> --message-id <openMessageId> --open-conversation-id <openConversationId>`},
 	Execute: func(rt *shortcut.RuntimeContext) error {
 		return rt.CallMCP("get_resource_download_url", map[string]any{
 			"resourceType":       rt.Str("type"),
 			"resourceId":         rt.Str("resource-id"),
-			"openMessageId":      rt.Str("message-id"),
+			"openMessageId":      rt.StrFirst("message-id", "msg-id", "open-message-id"),
 			"openConversationId": rt.Str("open-conversation-id"),
 		})
 	},
@@ -899,7 +1135,9 @@ var MessagesListPin = shortcut.Shortcut{
 			return err
 		}
 		pins := listPinProject(data)
-		return rt.Output(map[string]any{"count": len(pins), "pins": pins})
+		payload := map[string]any{"count": len(pins), "pins": pins}
+		chatmsg.ApplyPagination(payload, data)
+		return rt.Output(payload)
 	},
 }
 
@@ -928,6 +1166,9 @@ func listPinProject(data map[string]any) []map[string]any {
 		}
 		if v, ok := listPinFirst(m, "openConversationId", "conversationId", "openConvId"); ok {
 			row["conversationId"] = v
+		}
+		if threadID := chatmsg.ThreadID(m); threadID != nil {
+			row["threadId"] = threadID
 		}
 		if len(row) > 0 {
 			out = append(out, row)

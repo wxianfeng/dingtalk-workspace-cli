@@ -59,6 +59,19 @@ type ToolCaller interface {
 	JQ() string
 }
 
+// ReadToolCaller is an optional capability for a narrowly classified read
+// lookup that must still execute while the outer command is rendering a
+// dry-run plan. Implementations must fail closed unless they can bypass the
+// global write barrier without weakening it for ordinary CallTool calls.
+//
+// The Shortcut runtime uses this only after accepting a narrow read-only tool
+// name classification.
+// Keeping it separate from ToolCaller means existing callers remain protected
+// by the default "dry-run executes nothing" contract.
+type ReadToolCaller interface {
+	CallReadTool(ctx context.Context, productID, toolName string, args map[string]any) (*ToolResult, error)
+}
+
 // RuntimeDefaultFn resolves a single runtimeDefault placeholder (e.g.
 // "$currentUserId") to a concrete string value. Called lazily at RunE time.
 // Returning (_, false) is equivalent to "not registered" and falls through
@@ -72,10 +85,12 @@ type Hooks struct {
 	Name         string // "open" (default) / overlay identifier
 	ScenarioCode string // injected into x-dingtalk-scenario-code header
 
-	// ClawTypeValue is the claw identity carried in message-send tool
+	// ClawTypeValue is the display identity carried only in message-send tool
 	// arguments (parameter clawType) so the IM server can render the
-	// "Send from AI" indicator on delivered messages. Empty → falls back
-	// to DefaultOSSClawType; overlays set their own value (e.g. "wukong").
+	// "Send from AI" indicator on delivered messages. It is intentionally
+	// separate from the HTTP claw-type Agent Product header and is not
+	// overridden by DWS_AGENT_PRODUCT. Empty → DefaultOSSClawType; overlays
+	// set their own message-display value (e.g. "wukong").
 	ClawTypeValue string
 
 	// PersonalEventSourceID identifies the personal-event source channel
@@ -93,9 +108,15 @@ type Hooks struct {
 	ConfigDir func() string // custom config directory; nil → ~/.dws
 
 	// --- HTTP headers ---
+	// MergeHeaders must preserve base headers. If it sets claw-type, that value
+	// must be deterministic and independent of the supplied base map because
+	// PAT error serialization resolves it with an empty map. The hook must not
+	// perform network, keychain, credential-refresh, or other blocking work.
 	MergeHeaders func(base map[string]string) map[string]string
 
 	// --- EnterpriseCredential HTTP headers ---
+	// This hook is only for credential material. It must not set claw-type;
+	// the core reasserts that Header after the hook returns.
 	EnterpriseCredentialHeaders func(base map[string]string) map[string]string
 
 	// --- auth ---
@@ -185,10 +206,11 @@ func Override(h *Hooks) {
 	current = h
 }
 
-// ClawType returns the claw identity for the active edition, falling back
-// to DefaultOSSClawType when the overlay does not set one. Message-send
-// helpers attach this value as the clawType tool argument so the IM server
-// can label delivered messages as sent via AI.
+// ClawType returns the message-display identity for the active edition,
+// falling back to DefaultOSSClawType when the overlay does not set one.
+// Message-send helpers attach this value as the clawType tool argument so the
+// IM server can label delivered messages as sent via AI. It is a separate axis
+// from the HTTP claw-type header and is not affected by DWS_AGENT_PRODUCT.
 func ClawType() string {
 	if v := Get().ClawTypeValue; v != "" {
 		return v

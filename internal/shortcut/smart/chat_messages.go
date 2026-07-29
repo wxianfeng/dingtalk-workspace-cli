@@ -56,13 +56,15 @@ var ChatMessages = shortcut.Shortcut{
 		{Name: "conversation-id", Type: shortcut.FlagString, Desc: "--group 的别名", Hidden: true},
 		{Name: "id", Type: shortcut.FlagString, Desc: "--group 的别名", Hidden: true},
 		{Name: "user", Type: shortcut.FlagString, Desc: "单聊对方的 userId，与 --group 互斥"},
+		{Name: "open-dingtalk-id", Type: shortcut.FlagString, Desc: "单聊对方的 openDingTalkId，与 --group/--user 互斥"},
 		{Name: "time", Type: shortcut.FlagString, Desc: "起始时间，如 \"2025-03-01 00:00:00\"（可选）"},
 		{Name: "limit", Type: shortcut.FlagInt, Desc: "每页拉取的消息条数（可选）"},
 		{Name: "size", Type: shortcut.FlagInt, Desc: "--limit 的旧版别名", Hidden: true},
 		{Name: "direction", Type: shortcut.FlagString, Desc: "时间方向 newer/older（可选，newer 从给定时间往现在拉，older 往以前拉）"},
+		{Name: "no-reactions", Type: shortcut.FlagBool, Desc: "不输出消息 reaction（默认输出）"},
 	},
 	Constraints: []shortcut.Constraint{
-		{Kind: shortcut.ConstraintExactlyOne, Flags: []string{"group", "conversation-id", "id", "user"}},
+		{Kind: shortcut.ConstraintExactlyOne, Flags: []string{"group", "conversation-id", "id", "user", "open-dingtalk-id"}},
 	},
 	Tips: []string{
 		`dws chat +chat-messages --group <openconversation_id> --time "2025-03-01 00:00:00"`,
@@ -97,6 +99,9 @@ var ChatMessages = shortcut.Shortcut{
 		if group := rt.StrFirst("group", "conversation-id", "id"); group != "" {
 			tool = "list_conversation_message_v2"
 			params["openconversation_id"] = group
+		} else if openID := strings.TrimSpace(rt.Str("open-dingtalk-id")); openID != "" {
+			tool = "list_individual_chat_message"
+			params["openDingTalkId"] = openID
 		} else {
 			tool = "list_individual_chat_message"
 			params["userId"] = rt.Str("user")
@@ -112,13 +117,16 @@ var ChatMessages = shortcut.Shortcut{
 		items := chatMessageItems(data)
 		results := make([]map[string]any, 0, len(items))
 		for _, m := range items {
-			results = append(results, projectChatMessage(m))
+			results = append(results, projectChatMessageWithReactions(m, !rt.Bool("no-reactions")))
 		}
 
-		return rt.Output(map[string]any{
+		payload := map[string]any{
 			"messages": results,
 			"count":    len(results),
-		})
+		}
+		direction := strings.TrimSpace(strings.ToLower(rt.Str("direction")))
+		chatmsg.ApplyMessagePagination(payload, data, items, direction)
+		return rt.Output(payload)
 	},
 }
 
@@ -158,12 +166,45 @@ func chatMessageItems(data map[string]any) []map[string]any {
 // marking encrypted messages via chatmsg, and recursively expanding forwarded
 // chat records under "forwarded".
 func projectChatMessage(m map[string]any) map[string]any {
+	return projectChatMessageWithReactions(m, true)
+}
+
+func projectChatMessageWithReactions(m map[string]any, includeReactions bool) map[string]any {
 	row := map[string]any{
 		"sender":     chatmsg.Sender(m),
 		"text":       chatmsg.Text(m),
 		"createTime": chatmsg.CreateTime(m),
 	}
-	if forwarded := chatmsg.Forwarded(m, projectChatMessage); len(forwarded) > 0 {
+	if messageID := chatmsg.MessageID(m); messageID != nil {
+		row["messageId"] = messageID
+	}
+	if conversationID := chatmsg.ConversationID(m); conversationID != nil {
+		row["conversationId"] = conversationID
+	}
+	if threadID := chatmsg.ThreadID(m); threadID != nil {
+		row["threadId"] = threadID
+	}
+	if messageType := chatmsg.MessageType(m); messageType != nil {
+		row["messageType"] = messageType
+	}
+	if updateTime := chatmsg.UpdateTime(m); updateTime != nil {
+		row["updateTime"] = updateTime
+	}
+	if includeReactions {
+		if reactions := chatmsg.Reactions(m); len(reactions) > 0 {
+			row["reactions"] = reactions
+		}
+	}
+	if quoted := chatmsg.QuotedMessage(m); len(quoted) > 0 {
+		row["quotedMessage"] = quoted
+	}
+	if resources := chatmsg.Resources(m); len(resources) > 0 {
+		row["resourceRefs"] = resources
+	}
+	projectForwarded := func(item map[string]any) map[string]any {
+		return projectChatMessageWithReactions(item, includeReactions)
+	}
+	if forwarded := chatmsg.Forwarded(m, projectForwarded); len(forwarded) > 0 {
 		row["forwarded"] = forwarded
 	}
 	return row

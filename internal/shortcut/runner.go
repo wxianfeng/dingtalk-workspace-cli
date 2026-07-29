@@ -142,11 +142,15 @@ func (rt *RuntimeContext) CallMCP(tool string, params map[string]any) error {
 // The product is explicit (not the shortcut's own) because smart shortcuts
 // routinely cross services — e.g. resolve a name via `contact` then act via
 // `chat`. Reads run even under --dry-run so a preview can still resolve inputs.
-// Write tools that need parsed responses must use CallMCPWriteData instead; as
-// a backstop, obvious write-like tool names are rejected here under --dry-run.
+// Write tools that need parsed responses must use CallMCPWriteData instead.
+// Under --dry-run this path fails closed unless the tool name belongs to the
+// narrow read-only naming contract used by the current MCP registry.
 func (rt *RuntimeContext) CallMCPData(product, tool string, params map[string]any) (map[string]any, error) {
-	if rt.DryRun() && looksWriteTool(tool) {
-		return nil, dryRunWriteError(product, tool)
+	if rt.DryRun() {
+		if !looksReadTool(tool) {
+			return nil, dryRunWriteError(product, tool)
+		}
+		return rt.callMCPReadData(product, tool, params)
 	}
 	return rt.callMCPData(product, tool, params)
 }
@@ -163,17 +167,14 @@ func (rt *RuntimeContext) CallMCPWriteData(product, tool string, params map[stri
 
 func dryRunWriteError(product, tool string) error {
 	return apperrors.NewValidation(fmt.Sprintf(
-		"--dry-run 下禁止执行写操作 %s/%s；请在 shortcut 中输出 preview 后返回", product, tool))
+		"--dry-run 下禁止执行未明确分类为只读的工具 %s/%s；请在 shortcut 中输出 preview 后返回",
+		product, tool))
 }
 
-func looksWriteTool(tool string) bool {
+func looksReadTool(tool string) bool {
 	tool = strings.TrimSpace(strings.ToLower(tool))
 	for _, prefix := range []string{
-		"add_", "append_", "approve_", "archive_", "cancel_", "create_",
-		"delete_", "disable_", "enable_", "grant_", "import_", "insert_",
-		"invite_", "move_", "publish_", "reject_", "remove_", "replace_",
-		"respond", "revoke_", "send_", "set_", "submit_", "update_",
-		"upload_", "write_",
+		"get_", "list_", "query_", "search_", "unread_",
 	} {
 		if strings.HasPrefix(tool, prefix) {
 			return true
@@ -187,6 +188,24 @@ func (rt *RuntimeContext) callMCPData(product, tool string, params map[string]an
 		params = map[string]any{}
 	}
 	text, err := helpers.CallMCPToolTextOnServer(product, tool, params)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(text) == "" {
+		return map[string]any{}, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		return nil, apperrors.NewInternal(fmt.Sprintf("解析 %s 返回失败: %v", tool, err))
+	}
+	return out, nil
+}
+
+func (rt *RuntimeContext) callMCPReadData(product, tool string, params map[string]any) (map[string]any, error) {
+	if params == nil {
+		params = map[string]any{}
+	}
+	text, err := helpers.CallMCPReadToolTextOnServer(product, tool, params)
 	if err != nil {
 		return nil, err
 	}

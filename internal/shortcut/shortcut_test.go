@@ -371,7 +371,7 @@ func TestCrossPlatformCoverageCallMCPWriteDataRejectsDryRun(t *testing.T) {
 	}
 }
 
-func TestCrossPlatformCoverageCallMCPDataRejectsLikelyWriteUnderDryRun(t *testing.T) {
+func TestCrossPlatformCoverageCallMCPDataDryRunReadNameFailsClosed(t *testing.T) {
 	root := &cobra.Command{Use: "dws"}
 	root.PersistentFlags().Bool("dry-run", false, "")
 	cmd := &cobra.Command{Use: "x"}
@@ -381,12 +381,26 @@ func TestCrossPlatformCoverageCallMCPDataRejectsLikelyWriteUnderDryRun(t *testin
 	}
 
 	rt := &RuntimeContext{cmd: cmd, shortcut: Shortcut{Service: "chat"}}
-	_, err := rt.CallMCPData("chat", "send_personal_message", map[string]any{"receiverUid": "u"})
-	if err == nil {
-		t.Fatal("expected likely write guard error")
+	for _, tool := range []string{"send_personal_message", "custom_operation"} {
+		_, err := rt.CallMCPData("chat", tool, map[string]any{"receiverUid": "u"})
+		if err == nil {
+			t.Fatalf("%s: expected dry-run read allowlist error", tool)
+		}
+		if !strings.Contains(err.Error(), "chat/"+tool) {
+			t.Fatalf("%s: error = %q, want tool name", tool, err.Error())
+		}
 	}
-	if !strings.Contains(err.Error(), "chat/send_personal_message") {
-		t.Fatalf("error = %q, want tool name", err.Error())
+
+	for _, tool := range []string{
+		"get_conversation_info",
+		"list_topic_replies",
+		"query_busy_status",
+		"search_groups",
+		"unread_message_conversation_list",
+	} {
+		if !looksReadTool(tool) {
+			t.Errorf("%s: expected read-only classification", tool)
+		}
 	}
 }
 

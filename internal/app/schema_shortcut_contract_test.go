@@ -11,22 +11,26 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/cli"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
 )
 
-const publicShortcutSchemaCount = 210
+const (
+	publicShortcutCount          = 265
+	schemaPublishedShortcutCount = 210
+)
 
-func TestEmbeddedSchemaPublishesEveryPublicShortcutContract(t *testing.T) {
+func TestEmbeddedSchemaCoversOrExactlyExcludesEveryPublicShortcutContract(t *testing.T) {
 	tools := embeddedSchemaAllToolsForHelpFlagTest(t, NewRootCommand())
-	public := make([]shortcut.Shortcut, 0, publicShortcutSchemaCount)
+	public := make([]shortcut.Shortcut, 0, publicShortcutCount)
 	for _, candidate := range shortcut.All() {
 		if candidate.UserDefined || !shortcut.InPublicCatalog(candidate.Service, candidate.Command) {
 			continue
 		}
 		public = append(public, candidate)
 	}
-	if got := len(public); got != publicShortcutSchemaCount {
-		t.Fatalf("public built-in shortcuts = %d, want %d", got, publicShortcutSchemaCount)
+	if got := len(public); got != publicShortcutCount {
+		t.Fatalf("public built-in shortcuts = %d, want %d", got, publicShortcutCount)
 	}
 
 	deliveredShortcuts := 0
@@ -35,23 +39,44 @@ func TestEmbeddedSchemaPublishesEveryPublicShortcutContract(t *testing.T) {
 			deliveredShortcuts++
 		}
 	}
-	if deliveredShortcuts != publicShortcutSchemaCount {
-		t.Fatalf("embedded schema --all shortcut tools = %d, want %d", deliveredShortcuts, publicShortcutSchemaCount)
+	if deliveredShortcuts != schemaPublishedShortcutCount {
+		t.Fatalf("embedded schema --all shortcut tools = %d, want %d", deliveredShortcuts, schemaPublishedShortcutCount)
 	}
 
+	exclusions, err := cli.EmbeddedRuntimeSchemaExclusions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	excludedPaths := make(map[string]bool, len(exclusions))
+	for _, exclusion := range exclusions {
+		if !exclusion.Reviewed || strings.TrimSpace(exclusion.Reason) == "" {
+			t.Fatalf("unreviewed public command exclusion: %#v", exclusion)
+		}
+		excludedPaths[exclusion.CLIPath] = true
+	}
+
+	excludedShortcuts := 0
 	for _, declared := range public {
 		declared := declared
 		t.Run(declared.Service+"/"+strings.TrimPrefix(declared.Command, "+"), func(t *testing.T) {
 			canonical := shortcutSchemaCanonical(declared)
 			tool := tools[canonical]
 			if tool == nil {
-				t.Fatalf("embedded schema --all is missing %s (%s %s)", canonical, declared.Service, declared.Command)
+				cliPath := declared.Service + " " + declared.Command
+				if !excludedPaths[cliPath] {
+					t.Fatalf("embedded schema --all is missing %s (%s) without an exact reviewed exclusion", canonical, cliPath)
+				}
+				excludedShortcuts++
+				return
 			}
 			assertEmbeddedShortcutIdentityAndSelection(t, tool, declared, canonical)
 			assertEmbeddedShortcutSafetyAndInterface(t, tool, declared, canonical)
 			assertEmbeddedShortcutParameters(t, tool, declared, canonical)
 			assertEmbeddedShortcutConstraints(t, tool, declared, canonical)
 		})
+	}
+	if got, want := excludedShortcuts, publicShortcutCount-schemaPublishedShortcutCount; got != want {
+		t.Fatalf("exactly excluded public shortcuts = %d, want %d", got, want)
 	}
 }
 
@@ -81,7 +106,7 @@ func TestEmbeddedShortcutProgressiveQueriesReturnCompleteContracts(t *testing.T)
 
 	product := executeShortcutSchemaQuery(t, "chat")
 	productPayload, _ := product["product"].(map[string]any)
-	if got, want := int(product["count"].(float64)), 120; got != want {
+	if got, want := int(product["count"].(float64)), 124; got != want {
 		t.Fatalf("schema chat count = %d, want %d", got, want)
 	}
 	summaries := schemaContractObjectSlice(productPayload["tools"])
@@ -328,9 +353,9 @@ func assertEmbeddedShortcutConstraints(
 		case shortcut.ConstraintCustom:
 			for _, flagName := range flags {
 				description := schemaContractString(schemaContractMap(tool["parameters"])[flagName]["description"])
-				for _, requiredText := range []string{"原文不能为空", "不能重复"} {
-					if !strings.Contains(description, requiredText) {
-						t.Errorf("%s --%s description does not publish custom constraint %q: %q", canonical, flagName, requiredText, description)
+				for _, evidence := range shortcutCustomConstraintEvidence(constraint.Description) {
+					if !strings.Contains(description, evidence) {
+						t.Errorf("%s --%s description does not publish custom constraint evidence %q: %q", canonical, flagName, evidence, description)
 					}
 				}
 			}
@@ -347,6 +372,33 @@ func assertEmbeddedShortcutConstraints(
 	if got := tool["constraints"]; !schemaContractJSONEqual(got, want) {
 		t.Errorf("%s constraints = %s, want %s", canonical, mustShortcutJSON(got), mustShortcutJSON(want))
 	}
+}
+
+func shortcutCustomConstraintEvidence(description string) []string {
+	// Custom constraints are prose rather than a typed wire contract. Require
+	// their decision-relevant facts to survive in the delivered parameter
+	// description while allowing the renderer to reorder connective wording.
+	probes := []string{
+		"原文=>替换",
+		"不能为空",
+		"不能重复",
+		"大于 0",
+		"工作目录",
+		"相对路径",
+		"绝对路径",
+		"..",
+		"最多 15 个字符",
+	}
+	evidence := make([]string, 0, len(probes))
+	for _, probe := range probes {
+		if strings.Contains(description, probe) {
+			evidence = append(evidence, probe)
+		}
+	}
+	if len(evidence) > 0 {
+		return evidence
+	}
+	return []string{strings.TrimSpace(description)}
 }
 
 func mustShortcutJSON(value any) string {

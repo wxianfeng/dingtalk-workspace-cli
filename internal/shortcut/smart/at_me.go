@@ -55,6 +55,9 @@ var AtMe = shortcut.Shortcut{
 	Risk: shortcut.RiskRead,
 	Flags: []shortcut.Flag{
 		{Name: "days", Type: shortcut.FlagInt, Desc: "回溯天数（可选，默认 7）", Default: "7", Required: false},
+		{Name: "limit", Type: shortcut.FlagInt, Desc: "每页返回数量（默认 50）", Default: "50"},
+		{Name: "cursor", Type: shortcut.FlagString, Desc: "分页游标，翻页传上次的 nextCursor", Default: "0"},
+		{Name: "no-reactions", Type: shortcut.FlagBool, Desc: "不输出消息 reaction（默认输出）"},
 	},
 	Tips: []string{
 		`dws chat +at-me`,
@@ -77,8 +80,8 @@ var AtMe = shortcut.Shortcut{
 		data, err := rt.CallMCPData("chat", "search_at_me_message", map[string]any{
 			"startTime": startMs,
 			"endTime":   endMs,
-			"limit":     50,
-			"cursor":    "0",
+			"limit":     rt.Int("limit"),
+			"cursor":    rt.Str("cursor"),
 		})
 		if err != nil {
 			return err
@@ -92,9 +95,11 @@ var AtMe = shortcut.Shortcut{
 		}
 		results := make([]map[string]any, 0, len(items))
 		for _, m := range items {
-			results = append(results, atMeProject(m))
+			results = append(results, atMeProjectWithReactions(m, !rt.Bool("no-reactions")))
 		}
-		return rt.Output(map[string]any{"messages": results})
+		payload := map[string]any{"messages": results}
+		chatmsg.ApplyPagination(payload, data)
+		return rt.Output(payload)
 	},
 }
 
@@ -195,13 +200,46 @@ func atMeToMaps(arr []any) []map[string]any {
 // readable, ciphertext → marker) and recursively expanding any forwarded chat
 // record under "forwarded".
 func atMeProject(m map[string]any) map[string]any {
+	return atMeProjectWithReactions(m, true)
+}
+
+func atMeProjectWithReactions(m map[string]any, includeReactions bool) map[string]any {
 	row := map[string]any{
 		"sender":       atMeSender(m),
 		"time":         atMeTime(m),
 		"text":         atMeCleanText(m),
 		"conversation": atMeConversation(m),
 	}
-	if forwarded := chatmsg.Forwarded(m, atMeProject); len(forwarded) > 0 {
+	if messageID := chatmsg.MessageID(m); messageID != nil {
+		row["messageId"] = messageID
+	}
+	if conversationID := chatmsg.ConversationID(m); conversationID != nil {
+		row["conversationId"] = conversationID
+	}
+	if threadID := chatmsg.ThreadID(m); threadID != nil {
+		row["threadId"] = threadID
+	}
+	if messageType := chatmsg.MessageType(m); messageType != nil {
+		row["messageType"] = messageType
+	}
+	if updateTime := chatmsg.UpdateTime(m); updateTime != nil {
+		row["updateTime"] = updateTime
+	}
+	if includeReactions {
+		if reactions := chatmsg.Reactions(m); len(reactions) > 0 {
+			row["reactions"] = reactions
+		}
+	}
+	if quoted := chatmsg.QuotedMessage(m); len(quoted) > 0 {
+		row["quotedMessage"] = quoted
+	}
+	if resources := chatmsg.Resources(m); len(resources) > 0 {
+		row["resourceRefs"] = resources
+	}
+	projectForwarded := func(item map[string]any) map[string]any {
+		return atMeProjectWithReactions(item, includeReactions)
+	}
+	if forwarded := chatmsg.Forwarded(m, projectForwarded); len(forwarded) > 0 {
 		row["forwarded"] = forwarded
 	}
 	return row

@@ -87,12 +87,15 @@ func TestCrossPlatformCoverageChatMessageSearchUsesMCPContracts(t *testing.T) {
 		},
 		{
 			name:      "advanced search",
-			args:      []string{"message", "search-advanced", "--query", "categoryName", "--conversation-ids", "cid-1,cid-2", "--start", start, "--end", end, "--limit", "100", "--cursor", "0"},
+			args:      []string{"message", "search-advanced", "--query", "categoryName", "--conversation-ids", "cid-1,cid-2", "--message-type", "text", "--only-robot", "--conversation-type", "group", "--start", start, "--end", end, "--limit", "100", "--cursor", "0"},
 			productID: "im",
 			toolName:  "search_messages",
 			wantToolArg: map[string]any{
 				"keyword":             "categoryName",
 				"openConversationIds": []string{"cid-1", "cid-2"},
+				"messageType":         "text",
+				"onlyRobotMessages":   true,
+				"searchConvType":      "group",
 				"startTime":           startTime.UnixMilli(),
 				"endTime":             endTime.UnixMilli(),
 				"limit":               100,

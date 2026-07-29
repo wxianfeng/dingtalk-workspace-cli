@@ -145,6 +145,187 @@ func TestCreateTime(t *testing.T) {
 	}
 }
 
+func TestStableMessageIdentity(t *testing.T) {
+	message := map[string]any{
+		"openMessageId":      "msg-1",
+		"openConversationId": "cid-1",
+		"openConvThreadId":   "thread-1",
+		"msgType":            "text",
+	}
+	if got := MessageID(message); got != "msg-1" {
+		t.Errorf("MessageID = %v", got)
+	}
+	if got := ConversationID(message); got != "cid-1" {
+		t.Errorf("ConversationID = %v", got)
+	}
+	if got := ThreadID(message); got != "thread-1" {
+		t.Errorf("ThreadID = %v", got)
+	}
+	if got := MessageType(message); got != "text" {
+		t.Errorf("MessageType = %v", got)
+	}
+}
+
+func TestQuotedMessageIsBoundedAndSemantic(t *testing.T) {
+	got := QuotedMessage(map[string]any{
+		"quotedMessage": map[string]any{
+			"openMessageId":      "quoted-1",
+			"openConversationId": "cid-1",
+			"openConvThreadId":   "thread-1",
+			"sender":             "Alice",
+			"content":            "原消息",
+			"createTime":         "2026-07-28 10:00:00",
+			"quotedMessage":      map[string]any{"openMessageId": "nested-must-not-expand"},
+		},
+	})
+	if got["messageId"] != "quoted-1" || got["sender"] != "Alice" || got["text"] != "原消息" {
+		t.Fatalf("quoted message = %#v", got)
+	}
+	if got["threadId"] != "thread-1" {
+		t.Fatalf("quoted thread identity = %#v", got)
+	}
+	if _, recursive := got["quotedMessage"]; recursive {
+		t.Fatalf("quoted message expanded recursively: %#v", got)
+	}
+}
+
+func TestUpdateTimeOmitsUneditedEcho(t *testing.T) {
+	if got := UpdateTime(map[string]any{
+		"createTime": "2026-07-19 13:37:03",
+		"updateTime": "2026-07-19 13:37:03",
+	}); got != nil {
+		t.Errorf("UpdateTime echoed create time = %v, want nil", got)
+	}
+	if got := UpdateTime(map[string]any{
+		"createTime": "2026-07-19 13:37:03",
+		"updateTime": "2026-07-19 14:00:00",
+	}); got != "2026-07-19 14:00:00" {
+		t.Errorf("UpdateTime edited = %v", got)
+	}
+}
+
+func TestReactionsNormalizesEmotionReplyList(t *testing.T) {
+	got := Reactions(map[string]any{
+		"emotionReplyList": []any{
+			map[string]any{
+				"emoji":      "赞",
+				"replyUsers": []any{"user-a", "user-b"},
+			},
+			map[string]any{
+				"emotionName": "收到",
+				"replyCount":  float64(3),
+			},
+		},
+	})
+	counts, ok := got["counts"].([]map[string]any)
+	if !ok || len(counts) != 2 {
+		t.Fatalf("reaction counts = %#v", got["counts"])
+	}
+	if counts[0]["emoji"] != "赞" || counts[0]["count"] != 2 {
+		t.Errorf("first reaction count = %#v", counts[0])
+	}
+	if counts[1]["emoji"] != "收到" || counts[1]["count"] != float64(3) {
+		t.Errorf("second reaction count = %#v", counts[1])
+	}
+	details, ok := got["details"].([]map[string]any)
+	if !ok || len(details) != 2 {
+		t.Fatalf("reaction details = %#v", got["details"])
+	}
+	users, ok := details[0]["replyUsers"].([]any)
+	if !ok || len(users) != 2 {
+		t.Errorf("reaction users = %#v", details[0]["replyUsers"])
+	}
+	if got := Reactions(map[string]any{}); got != nil {
+		t.Errorf("empty reactions = %#v, want nil", got)
+	}
+}
+
+func TestApplyPaginationReadsNestedEnvelope(t *testing.T) {
+	payload := map[string]any{"count": 98}
+	ApplyPagination(payload, map[string]any{
+		"result": map[string]any{
+			"hasMore":    true,
+			"nextCursor": "cursor-redacted-in-audits",
+		},
+	})
+	if payload["hasMore"] != true || payload["complete"] != false {
+		t.Errorf("pagination completeness = %#v", payload)
+	}
+	if payload["nextCursor"] != "cursor-redacted-in-audits" {
+		t.Errorf("nextCursor = %#v", payload["nextCursor"])
+	}
+
+	payload = map[string]any{}
+	ApplyPagination(payload, map[string]any{
+		"data": map[string]any{"has_more": false},
+	})
+	if payload["hasMore"] != false || payload["complete"] != true {
+		t.Errorf("completed pagination = %#v", payload)
+	}
+}
+
+func TestApplyMessagePaginationUsesExecutableTimeBoundary(t *testing.T) {
+	payload := map[string]any{}
+	ApplyMessagePagination(payload, map[string]any{
+		"result": map[string]any{
+			"hasMore":    true,
+			"nextCursor": "not-a-message-list-cli-flag",
+		},
+	}, []map[string]any{
+		{"createTime": "2026-07-28 10:00:00"},
+		{"createTime": "2026-07-28 09:00:00"},
+	}, "older")
+	if _, leaked := payload["nextCursor"]; leaked {
+		t.Fatalf("message pagination exposed unusable cursor: %#v", payload)
+	}
+	next, ok := payload["nextPage"].(map[string]any)
+	if !ok || next["time"] != "2026-07-28 09:00:00" || next["direction"] != "older" {
+		t.Fatalf("message nextPage = %#v", payload["nextPage"])
+	}
+}
+
+func TestResourcesBuildsActionableDownloadReferences(t *testing.T) {
+	resources := Resources(map[string]any{
+		"openMessageId":      "msg-1",
+		"openConversationId": "cid-1",
+		"content":            `图片 [图片消息](mediaId=@image-a)`,
+		"attachments": []any{
+			map[string]any{"mediaId": "@image-b"},
+			map[string]any{"content": `{"mediaId":"@image-a"}`},
+		},
+	})
+	if len(resources) != 2 {
+		t.Fatalf("resources = %#v", resources)
+	}
+	first := resources[0]
+	if first["resourceId"] != "@image-a" || first["type"] != "mediaId" {
+		t.Fatalf("first resource = %#v", first)
+	}
+	download, _ := first["download"].(map[string]any)
+	arguments, _ := download["arguments"].(map[string]any)
+	if download["ready"] != true ||
+		arguments["message-id"] != "msg-1" ||
+		arguments["open-conversation-id"] != "cid-1" ||
+		arguments["resource-id"] != "@image-a" {
+		t.Fatalf("download = %#v", download)
+	}
+}
+
+func TestResourcesReportsMissingDownloadContext(t *testing.T) {
+	resources := Resources(map[string]any{"content": `{"mediaId":"@image-a"}`})
+	if len(resources) != 1 {
+		t.Fatalf("resources = %#v", resources)
+	}
+	download, _ := resources[0]["download"].(map[string]any)
+	if download["ready"] != false {
+		t.Fatalf("download = %#v", download)
+	}
+	missing, _ := download["missing"].([]string)
+	if len(missing) != 2 || missing[0] != "message-id" || missing[1] != "open-conversation-id" {
+		t.Fatalf("missing = %#v", missing)
+	}
+}
+
 func TestForwarded(t *testing.T) {
 	var project func(m map[string]any) map[string]any
 	project = func(m map[string]any) map[string]any {
