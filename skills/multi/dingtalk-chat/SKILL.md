@@ -1,6 +1,6 @@
 ---
 name: dingtalk-chat
-description: 钉钉群聊与消息。Use when 用户提到 发消息/单聊/群聊/建群/拉人进群/改群名/搜索群/群成员管理/@消息/撤回消息/机器人群发/Webhook通知/发图片或文件到群/标记未读/清除红点/置顶消息/全部群列表。不做紧急 DING/短信/电话（走 dingtalk-misc）、邮件（走 dingtalk-mail）、班级群（走 dingtalk-misc）。命令前缀：dws chat。
+description: 钉钉群聊与消息。Use when 用户提到 发消息/编辑或撤回消息/单聊/群聊/建群/普通群升级外部群/群昵称/会话分组/群成员管理/@消息/搜索聊天记录/话题回复/收藏消息/机器人群发/Webhook通知/发送或下载消息图片与文件。不做紧急 DING/短信/电话（走 dingtalk-misc）、邮件（走 dingtalk-mail）、班级群（走 dingtalk-misc）。命令前缀：dws chat。
 metadata:
   cli_version: ">=0.2.14"
   category: product
@@ -28,58 +28,126 @@ metadata:
 | `dws chat +bot-find` | read | 搜索全部可用机器人（含他人/官方，返回 openDingTalkId 可发单聊） |
 | `dws chat +bot-search` | read | 搜索当前用户自己创建的机器人 |
 | `dws chat +broadcast` | write | 按姓名逐一给多个人群发同一条单聊消息（自动解析 userId、逐个发送） |
+| `dws chat +category-add-conversation` | write | 将会话移动到指定的自定义分组中 |
 | `dws chat +category-create` | write | 创建用户自定义会话分组 |
 | `dws chat +category-delete` | high-risk-write | 删除用户自定义会话分组 |
 | `dws chat +category-list` | read | 获取用户自定义会话分组 |
+| `dws chat +category-list-conversations` | read | 拉取指定自定义会话分组下的会话 |
+| `dws chat +category-remove-conversation` | write | 将会话从指定的自定义分组中移出 |
 | `dws chat +category-rename` | write | 更新用户自定义会话分组的名称 |
+| `dws chat +chat-add-bot` | write | 将机器人添加到群中 |
+| `dws chat +chat-audit-join` | write | 审批入群验证（通过/拒绝/删除/忽略/拉黑） |
 | `dws chat +chat-bots` | read | 查看群内所有机器人 |
+| `dws chat +chat-create` | write | 以当前用户身份创建钉钉群聊 |
 | `dws chat +chat-dismiss` | high-risk-write | 解散群聊（不可逆，需群主权限） |
+| `dws chat +chat-get-by-id` | read | 根据群号获取群聊信息 |
 | `dws chat +chat-invite-url` | read | 获取群邀请链接 |
 | `dws chat +chat-list-all` | read | 分页拉取我加入的所有群列表 |
 | `dws chat +chat-list-join-requests` | read | 分页拉取入群验证记录 |
 | `dws chat +chat-list-mine` | read | 拉取我创建/管理的群 |
+| `dws chat +chat-members-get` | read | 根据成员 openDingTalkId 批量查询群成员详情 |
+| `dws chat +chat-members-list` | read | 列出群成员并把用户与机器人分桶（支持群名语义解析） |
+| `dws chat +chat-messages` | read | 拉取某个会话（群聊或单聊）的消息列表并投影出发言人/文本/时间 |
 | `dws chat +chat-mute` | write | 全员禁言 / 取消全员禁言 |
+| `dws chat +chat-mute-member` | write | 指定群成员禁言 / 取消禁言 |
+| `dws chat +chat-quit` | write | 退出群聊 |
+| `dws chat +chat-remove-bot` | high-risk-write | 从群内移除机器人 |
 | `dws chat +chat-role-add` | write | 添加群身份 |
 | `dws chat +chat-role-list` | read | 拉取会话的群身份列表 |
 | `dws chat +chat-role-query-user` | read | 查询群成员的群身份 |
+| `dws chat +chat-role-remove` | high-risk-write | 删除群身份 |
+| `dws chat +chat-role-remove-user` | write | 移除用户的指定群身份 |
 | `dws chat +chat-role-set-user` | write | 设置用户的群身份（覆盖该用户的全部群身份） |
 | `dws chat +chat-role-update` | write | 更新群身份名称 |
 | `dws chat +chat-search` | read | 按关键词搜索群聊 |
 | `dws chat +chat-set-admin` | write | 设置 / 取消群管理员 |
 | `dws chat +chat-set-history` | write | 设置新成员入群可查看历史消息范围 |
+| `dws chat +chat-transfer-owner` | write | 转让群主 |
+| `dws chat +chat-update` | write | 更新群名称（仅名称，不支持 description） |
 | `dws chat +chat-update-alias` | write | 设置群备注（仅自己可见） |
+| `dws chat +chat-update-icon` | write | 更新群头像 |
 | `dws chat +chat-update-nick` | write | 设置当前用户在群内的群昵称 |
+| `dws chat +chat-update-settings` | write | 更新群设置（settingKey + status） |
 | `dws chat +conversation-clear-all-red-point` | write | 清除所有会话红点（全部已读） |
+| `dws chat +conversation-clear-messages` | high-risk-write | 清空当前用户指定会话的聊天记录（仅本人视角，不可逆） |
+| `dws chat +conversation-clear-red-point` | write | 清除会话红点 |
+| `dws chat +conversation-hide` | write | 会话列表中隐藏会话（收到新消息会重新出现） |
 | `dws chat +conversation-info` | read | 获取会话信息（群聊传 --group，单聊传 --open-dingtalk-id） |
 | `dws chat +conversation-list` | read | 分页获取当前用户的全部会话列表（单聊+群聊） |
-| `dws chat +conversation-list-top` | read | 拉取置顶会话列表 |
+| `dws chat +conversation-list-top` | read | 拉取置顶会话列表，可只看群聊或单聊 |
+| `dws chat +conversation-mark-read` | write | 标记消息已读（该消息及之前的消息都标记为已读） |
+| `dws chat +conversation-mark-unread` | write | 标记会话为未读 |
+| `dws chat +conversation-mute` | write | 会话消息免打扰（支持单聊/群聊） |
+| `dws chat +conversation-set-top` | write | 批量会话置顶 / 取消置顶（最多 10 个） |
 | `dws chat +dm` | write | 按姓名直接给某人发单聊消息（自动解析 userId） |
+| `dws chat +feed-group-query-item` | read | 在会话分组结果中按会话 ID 精确查询多项 |
+| `dws chat +flag-cancel` | write | 取消收藏一条或多条消息（最多 10 条） |
+| `dws chat +flag-create` | write | 收藏一条或多条消息（最多 10 条） |
+| `dws chat +flag-list` | read | 分页查询当前用户收藏的消息 |
 | `dws chat +group-members` | read | 按群名列出群成员（自动搜群解析 openConversationId） |
+| `dws chat +messages-add-emoji` | write | 对消息添加 emoji 表情回应 |
+| `dws chat +messages-add-text-emotion` | write | 对消息添加文字表情回应 |
+| `dws chat +messages-batch-recall-by-bot` | write | 机器人撤回单聊消息 |
+| `dws chat +messages-batch-send-by-bot` | write | 机器人批量向用户发送单聊 Markdown 消息 |
+| `dws chat +messages-combine-forward` | write | 合并转发多条消息 |
+| `dws chat +messages-create-text-emotion` | write | 创建文字表情（获取 emotionId） |
+| `dws chat +messages-forward` | write | 转发单条消息 |
+| `dws chat +messages-forward-topic` | write | 转发话题消息到目标会话 |
+| `dws chat +messages-list` | read | 拉取群聊会话消息 |
 | `dws chat +messages-list-direct` | read | 拉取单聊会话消息 |
 | `dws chat +messages-list-pin` | read | 拉取会话中钉住的消息列表 |
 | `dws chat +messages-list-unread-conversations` | read | 获取有未读消息的会话列表 |
 | `dws chat +messages-mget` | read | 根据消息 ID 批量查询消息（最多 50 条） |
 | `dws chat +messages-query-send-status` | read | 查询消息发送状态 |
 | `dws chat +messages-read-status` | read | 查询消息的已读/未读状态 |
+| `dws chat +messages-recall` | write | 撤回当前用户发送的消息 |
+| `dws chat +messages-recall-by-bot` | write | 机器人撤回群消息 |
+| `dws chat +messages-remove-emoji` | write | 移除消息的 emoji 表情回应 |
+| `dws chat +messages-remove-text-emotion` | write | 移除消息的文字表情回应 |
+| `dws chat +messages-reply` | write | 以当前用户身份引用回复消息（自动补全原发送者） |
+| `dws chat +messages-resource-download` | read | 安全下载消息资源（图片/视频/语音/文件）到工作目录内，无需交互确认 |
+| `dws chat +messages-resource-url` | read | 获取消息资源（图片/视频/语音）下载链接 |
+| `dws chat +messages-send` | write | 统一发送文本、Markdown、当前用户文件或已有 mediaId 图片 |
+| `dws chat +messages-send-by-bot` | write | 机器人向群聊发送 Markdown 消息 |
 | `dws chat +messages-send-by-webhook` | write | 自定义机器人 Webhook 发送群消息 |
+| `dws chat +messages-send-card` | write | 创建流式卡片，可在同一次调用中写入内容并结束 |
+| `dws chat +messages-set-pin` | write | 钉住消息（Pin） |
+| `dws chat +messages-set-top` | write | 置顶消息 |
+| `dws chat +messages-unset-pin` | write | 取消钉住消息（Unpin） |
+| `dws chat +messages-unset-top` | write | 取消置顶消息 |
 | `dws chat +messages-update-card` | write | 流式更新卡片内容（最后一次 --flow-status 应为 3） |
 | `dws chat +my-groups` | read | 列出我加入的群，可按类型过滤并投影关键字段 |
+| `dws chat +search-msg` | read | 多维搜索消息，可全量翻页并批量富化详情 |
 | `dws chat +send-to-group` | write | 按群名直接给群发消息（自动搜群解析 openConversationId） |
+| `dws chat +thread-replies` | read | 拉取某条话题消息的全部回复并投影出发言人/文本/时间 |
 | `dws chat +unread-chats` | read | 列出我有未读消息的会话（投影会话名/未读数/会话ID） |
 <!-- VISIBLE_SHORTCUTS_END -->
+
+## IM Shortcut 优先路由
+
+- 统一发送优先用 `chat +messages-send`：通过 `--as user|bot|webhook` 选择身份，并只传该身份真实支持的目标、内容和凭据。仅在需要原子命令的特定返回结构或兼容参数时，才降级到 `chat message send` / `send-by-bot` / `send-by-webhook`。
+- 消息查询按意图选择：指定会话用 `+chat-messages`，跨维度过滤/全量翻页用 `+search-msg`，@我用 `+at-me`，已知消息 ID 批量富化用 `+messages-mget`，已知 thread/topic ID 读取回复用 `+thread-replies`。
+- 查询结果中的 `resourceRefs` 是可继续执行的资源上下文。引用、回复或合并转发中的子消息必须使用该子消息返回的 `messageId`；子消息缺会话 ID 时才继承父消息的 `openConversationId`。
+- 上述五个查询 Shortcut 与 `+messages-resource-download` 都沿用安全本地下载的 `read/not_required` 契约，不应添加 `--yes` 或触发交互确认。下载只允许工作目录内相对路径、默认不覆盖并原子落盘；需要覆盖时必须由用户显式传 `--overwrite`。
+- `+messages-send` 会按身份规范化 @ 占位符：user 使用 `<@id>` / `<@all>`，bot/webhook 使用 `@id` / `@手机号` / `@all`；只需声明 `--at-*` / `--at-all`，缺失占位符会自动补齐。
+- `+messages-send --as user --user <userId>` 会通过通讯录关键词搜索并按 userId 精确匹配 openDingTalkId，所有内容类型与 `--dry-run` 都使用同一只读解析链路；已有 openDingTalkId 时直接传 `--open-dingtalk-id`。
+- 流式卡片优先用 `+messages-send-card`：群聊传 `--group`，单聊 userId 传 `--receiver` 并由 CLI 通过通讯录关键词搜索做 userId 精确匹配，已有 openDingTalkId 则必须显式传 `--receiver-open-dingtalk-id`；三者严格三选一，禁止根据首字母猜身份类型。
 
 ## 意图表
 
 | 用户说 | 命令 |
 |--------|------|
-| "发消息给张三" | `dws chat message send --open-dingtalk-id <id> --text "<内容>"` |
-| "发到XX群" | `dws chat search --query "<群名>"` → `dws chat message send --group <openConversationId> --text "<内容>"` |
+| "发消息给张三" | `dws chat +messages-send --as user --open-dingtalk-id <id> --text "<内容>"` |
+| "发到XX群" | `dws chat +chat-search --query "<群名>"` → `dws chat +messages-send --as user --chat-id <openConversationId> --text "<内容>"` |
 | "建群" / "拉人进群" | `dws chat group create` / `dws chat group members add` |
-| "改群名" / "踢人" | `dws chat group rename` / `dws chat group members remove` |
-| "@我消息" | `dws chat message list-mentions` |
-| "查群聊记录" | `dws chat search --query "<群名>"` → `dws chat message list --group <openConversationId> --time "<yyyy-MM-dd HH:mm:ss>" --direction older` |
-| "用机器人发消息" | `dws chat message send-by-bot --robot-code <code> --group <id>` |
-| "Webhook 推一条" | `dws chat message send-by-webhook --token <token>` |
+| "改群名" / "踢人" | `dws chat group rename` / `dws chat group members remove --yes`（踢人不可逆，先确认目标） |
+| "@我消息" | `dws chat +at-me` |
+| "查群聊记录" | `dws chat +chat-messages --group <openConversationId>` |
+| "收藏/取消收藏这条消息" | `dws chat +flag-create` / `dws chat +flag-cancel` |
+| "查看我收藏的消息" | `dws chat +flag-list` |
+| "用机器人发消息" | `dws chat +messages-send --as bot --robot-code <code> --chat-id <id> --text "<内容>"` |
+| "Webhook 推一条" | `dws chat +messages-send --as webhook --webhook-token <token> --text "<内容>"` |
+| "发送流式卡片" | `dws chat +messages-send-card --group <openConversationId> --content "<内容>"`；单聊 userId 改用 `--receiver`，openDingTalkId 改用 `--receiver-open-dingtalk-id` |
 | "撤回消息" | `dws chat message recall --conversation-id <openConversationId> --msg-id <openMessageId>` |
 | "标记未读 / 清除红点 / 全部已读" | `dws chat mark-unread` / `dws chat clear-red-point` / `dws chat clear-all-red-point` |
 | "置顶某条消息 / 取消消息置顶" | `dws chat message set-top-msg` / `dws chat message unset-top-msg` |

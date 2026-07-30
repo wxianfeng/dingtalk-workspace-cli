@@ -496,6 +496,26 @@
     {
       "canonical_path": "chat.set_top_conversation",
       "cli_path": "chat set-top"
+    },
+    {
+      "canonical_path": "chat.shortcut_chat_messages",
+      "cli_path": "chat +chat-messages"
+    },
+    {
+      "canonical_path": "chat.shortcut_messages_send",
+      "cli_path": "chat +messages-send"
+    },
+    {
+      "canonical_path": "chat.shortcut_messages_send_card",
+      "cli_path": "chat +messages-send-card"
+    },
+    {
+      "canonical_path": "chat.shortcut_search_msg",
+      "cli_path": "chat +search-msg"
+    },
+    {
+      "canonical_path": "chat.shortcut_thread_replies",
+      "cli_path": "chat +thread-replies"
     }
   ]
 }
