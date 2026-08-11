@@ -95,6 +95,13 @@ func TestCrossPlatformCoverageCompatibilityAliases(t *testing.T) {
 			wantArgs:    map[string]any{"keyword": "树莓派", "limit": 5},
 		},
 		{
+			name:        "chat search command alias and positional query",
+			argv:        []string{"chat", "+search-group", "树莓派", "--yes"},
+			wantProduct: "im",
+			wantTool:    "search_groups",
+			wantArgs:    map[string]any{"keyword": "树莓派", "limit": 20},
+		},
+		{
 			name:        "bot find keyword",
 			argv:        []string{"chat", "+bot-find", "--keyword", "日报", "--yes"},
 			wantProduct: "bot",
@@ -175,6 +182,16 @@ func TestCrossPlatformCoverageCompatibilityAliases(t *testing.T) {
 				"openConversationId": "cid-1",
 			},
 		},
+		{
+			name:        "message recall plural single id alias",
+			argv:        []string{"chat", "+messages-recall", "--conversation-id", "cid-1", "--message-ids", "msg-1", "--yes"},
+			wantProduct: "im",
+			wantTool:    "recall_message",
+			wantArgs: map[string]any{
+				"openConversationId": "cid-1",
+				"openMessageId":      "msg-1",
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -200,6 +217,15 @@ func TestCrossPlatformCoverageCompatibilityAliases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCrossPlatformCoverageConversationNotificationSubSwitchesPublishMutePrerequisite(t *testing.T) {
+	for _, command := range []shortcut.Shortcut{ConversationMuteAtAll, ConversationMuteRedEnvelope} {
+		if !strings.Contains(command.Intent, "+conversation-mute") ||
+			!strings.Contains(command.Intent, "NotificationOffNotEnabled") {
+			t.Errorf("%s intent does not publish the live platform prerequisite: %q", command.Command, command.Intent)
+		}
 	}
 }
 
@@ -248,7 +274,7 @@ func TestCrossPlatformCoverageChatIDHelpers(t *testing.T) {
 	})
 }
 
-func TestChatMuteMemberResolvesUserIDToOpenDingTalkID(t *testing.T) {
+func TestCrossPlatformCoverageChatMuteMemberResolvesUserIDToOpenDingTalkID(t *testing.T) {
 	fake := &muteMemberResolutionCaller{}
 	helpers.InitDeps(fake)
 	root := newPlatformCoverageRoot()
@@ -277,7 +303,7 @@ func TestChatMuteMemberResolvesUserIDToOpenDingTalkID(t *testing.T) {
 	}
 }
 
-func TestConversationCategoryTitleValidation(t *testing.T) {
+func TestCrossPlatformCoverageConversationCategoryTitleValidation(t *testing.T) {
 	tests := []struct {
 		name      string
 		argv      []string

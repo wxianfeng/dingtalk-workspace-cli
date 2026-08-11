@@ -163,14 +163,28 @@ func commandShort(cmd *cobra.Command) string {
 
 // resolveVisibleProducts returns the set of top-level product IDs that should
 // be treated as visible. It unions the edition's VisibleProducts hook (when
-// set) with DirectRuntimeProductIDs(), so dynamically-registered products —
-// including plugins loaded via AppendDynamicServer — are never silently hidden
-// by a static VisibleProducts list.
+// set), StaticServers product IDs, and DirectRuntimeProductIDs(), so
+// dynamically-registered products — including plugins loaded via
+// AppendDynamicServer — are never silently hidden by a static VisibleProducts
+// list.
+//
+// StaticServers are consulted directly (without injectStaticServers) so the
+// declaration-only Schema source root can keep reviewed products visible
+// without mutating the process-global dynamic endpoint registry.
+// SupplementServers stay out of this set: they are helper-only endpoints and
+// must not synthesize top-level product visibility.
 func resolveVisibleProducts() map[string]bool {
 	allowed := map[string]bool{}
 	if fn := edition.Get().VisibleProducts; fn != nil {
 		for _, p := range fn() {
 			allowed[p] = true
+		}
+	}
+	if fn := edition.Get().StaticServers; fn != nil {
+		for _, server := range fn() {
+			if id := strings.TrimSpace(server.ID); id != "" {
+				allowed[id] = true
+			}
 		}
 	}
 	for id := range DirectRuntimeProductIDs() {

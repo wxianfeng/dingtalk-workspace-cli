@@ -14,6 +14,8 @@
 package smart
 
 import (
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd/contract"
 	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
 )
@@ -41,6 +43,31 @@ var MinutesSearch = shortcut.Shortcut{
 		"内部按 --query 关键词列出你创建的听记（最多 20 条），再在本地投影出每条的标题、创建时间和 taskUuid。" +
 		"这是纯只读操作，只做搜索与本地投影，不会修改任何听记；若没有匹配的听记则提示「没搜到妙记」。",
 	Risk: shortcut.RiskRead,
+	Safety: contract.SafetySpec{
+		Effect: "read", Risk: "low",
+		Confirmation: "not_required", Idempotency: "idempotent",
+	},
+	Contract: corecmd.ContractDecl{
+		Identity: contract.ToolIdentitySpec{
+			ProductID:      "minutes",
+			Name:           "shortcut_minutes_search",
+			CanonicalPath:  "minutes.shortcut_minutes_search",
+			CLIPath:        "minutes +minutes-search",
+			PrimaryCLIPath: "minutes +minutes-search",
+		},
+		Description: "按关键词搜索我的妙记并投影列表",
+		Interface: &contract.InterfaceSpec{
+			Mode:         "composite",
+			Availability: "available",
+			Reason:       "Reviewed built-in shortcut adapter: the executable CLI owns validation, optional multi-step orchestration, output projection, and confirmation; the complete command contract is not represented by one pinned MCP interface_ref.",
+		},
+		Selection: contract.SelectionSpec{
+			AgentSummary: "按关键词搜索我的妙记并投影列表",
+			UseWhen:      []string{"当你想按关键词快速找回自己创建的会议听记（妙记），只需要看到匹配到的标题、创建时间和 taskUuid 列表、而不想拿到一大坨原始字段时使用；内部按 --query 关键词列出你创建的听记（最多 20 条），再在本地投影出每条的标题、创建时间和 taskUuid。这是纯只读操作，只做搜索与本地投影，不会修改任何听记；若没有匹配的听记则提示「没搜到妙记」。"},
+			AvoidWhen:    []string{"需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令"},
+			Examples:     []string{"dws minutes +minutes-search --query 周会"},
+		},
+	},
 	Flags: []shortcut.Flag{
 		{Name: "query", Type: shortcut.FlagString, Desc: "按关键词搜索听记（必填）", Required: true},
 	},

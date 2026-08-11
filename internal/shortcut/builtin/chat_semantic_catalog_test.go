@@ -50,10 +50,10 @@ func TestChatSemanticCatalogExactlyCoversRegisteredShortcuts(t *testing.T) {
 		}
 		registered[item.Command] = item
 	}
-	if got, want := len(registered), 99; got != want {
+	if got, want := len(registered), 100; got != want {
 		t.Fatalf("registered Chat Shortcuts = %d, want %d", got, want)
 	}
-	if got, want := len(source.Shortcuts), 99; got != want {
+	if got, want := len(source.Shortcuts), 100; got != want {
 		t.Fatalf("reviewed Chat Shortcut records = %d, want %d", got, want)
 	}
 

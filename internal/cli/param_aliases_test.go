@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/testseam"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/cmdutil"
 	"github.com/spf13/cobra"
 )
@@ -37,9 +38,7 @@ func conceptFixture() []Concept {
 
 func useParamConceptLoader(t *testing.T, concepts ParamConcepts, err error) {
 	t.Helper()
-	previous := loadReviewedParamConcepts
-	loadReviewedParamConcepts = func() (ParamConcepts, error) { return concepts, err }
-	t.Cleanup(func() { loadReviewedParamConcepts = previous })
+	testseam.Swap(t, &loadReviewedParamConcepts, func() (ParamConcepts, error) { return concepts, err })
 }
 
 func TestReduceParamAliasesLoadsAndValidatesSourceTree(t *testing.T) {

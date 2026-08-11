@@ -159,7 +159,7 @@ type realFlag struct {
 // morphed name to the real flags that share that morph.
 func realFlagsByMorph(leaf *cobra.Command) map[string][]realFlag {
 	byMorph := make(map[string][]realFlag)
-	visitManualAgentCommandFlags(leaf, func(flag *pflag.Flag) {
+	visitAgentExampleCommandFlags(leaf, func(flag *pflag.Flag) {
 		if flag == nil || flag.Name == "help" {
 			return
 		}

@@ -6,10 +6,15 @@
 
 用于群搜索、建群、成员增删、机器人进群、群设置、群主转让、群邀请分享、群公告、入群审批、群身份和群禁言。
 
+<!-- dws-intent: chat.create.group -->基础建群默认使用 `dws chat +chat-create`：已知成员 ID 传
+`--users`，姓名/花名传 `--member-query`；群主默认当前用户，也可传
+`--owner-open-dingtalk-id` 或 `--owner-query`。全部自然身份唯一解析并去重后才执行一次创建。
+
 ## 必读约束
 
 - 群聊目标统一使用 `openConversationId`。只有数字群号时，先用 `chat group get-by-group-id` 转换。
-- `chat search` 在 `chat` 根下，不在 `chat group` 下。
+- 群搜索唯一推荐 `dws chat +chat-search --query <群名>`；`chat search`、`chat group search`、
+  `+chat-group-search` 和 `+search-group` 仅是兼容拼法，不应被写成并列默认路线。
 - 群成员操作中，`--users` 常为逗号分隔列表；具体要求以命令 `--help` 为准。
 - 解散群、踢人、转让群主、禁言、管理员设置都是高影响操作，执行前必须确认目标群和用户。
 - 发布或修改群公告会触达群成员；公告正文是 Markdown，定时公告 `--run-at` 建议带时区。
@@ -20,16 +25,20 @@
 
 | 命令 | 用途 | 示例与要点 |
 |------|------|------------|
-| `chat search` | 按关键词搜索群聊 | `dws chat search --query "项目冲刺" --limit 20 --cursor 0`；可选 `--exclude-muted` |
+| `+chat-search` | 按关键词搜索群聊 | 默认一页；要求全部候选时用 `dws chat +chat-search --query "项目冲刺" --page-all`；可用 `--page-size/--page-token` 或兼容的 `--limit/--cursor`，并检查完整性 ledger；多候选必须消歧 |
 | `chat search-common` | 搜索共同群 | `dws chat search-common --nicks "风雷,山乔" --match-mode AND --limit 20 --cursor 0` |
 | `chat group get-by-group-id` | 数字群号转 openConversationId | `dws chat group get-by-group-id --group-id 12345678` |
-| `chat group bots` | 查看群内所有机器人 | `dws chat group bots --group <openConversationId>` |
+| `+chat-bots` | 查看群内所有机器人 | `dws chat +chat-bots --group <群名或openConversationId>`；内部唯一解析自然群名 |
 
 `search-common` 中 `--match-mode AND` 表示所有人都在群里，`OR` 表示任一人在群里。
 
 ### 群创建与基础操作
 
-#### `dws chat group create`
+#### `dws chat group create`（底层 fallback）
+
+只有需要 `+chat-create` 尚未发布的底层字段时才评估原子创建命令，并先读取精确 leaf
+Schema。`+chat-create` 已支持 `--thread` 和显式群主；普通内部/外部群创建不得回流到手工
+`aisearch → group create` 链路。
 
 ```bash
 dws chat group create --name "Q1 项目冲刺群" --users userId1,userId2,userId3
@@ -50,7 +59,7 @@ dws chat group create --name "话题圈" --users userId1,userId2 --thread
 
 | 命令 | 用途 | 必填参数 |
 |------|------|----------|
-| `group rename` | 更新群名称 | `--id` `--name` |
+| `group rename` | 更新群名称 | `--id` `--name`；只知群名时先用 `+chat-search --query <群名>` 唯一解析 ID，不猜 `+chat-rename` |
 | `group quit` | 当前用户退出群聊 | `--group` |
 | `group dismiss` | 解散群聊，不可逆 | `--group` |
 
@@ -58,7 +67,7 @@ dws chat group create --name "话题圈" --users userId1,userId2 --thread
 
 | 命令 | 用途 | 示例 |
 |------|------|------|
-| `group members` | 分页查看群成员 | `dws chat group members --id <openConversationId> --cursor 0` |
+| `+chat-members-list` | 全量查看群成员并分桶用户/机器人 | `--group <群名或openConversationId>`；显式 ID 也可用 `--conversation-id`，检查 buckets/complete/failures |
 | `group members add` | 添加群成员 | `dws chat group members add --id <openConversationId> --users userId1,userId2` |
 | `group members remove` | 移除群成员 | `dws chat group members remove --id <openConversationId> --users userId1,userId2` |
 | `group members list-by-ids` | 按 openDingTalkId 批量查成员详情 | `dws chat group members list-by-ids --id <openConversationId> --users openDingTalkId1,openDingTalkId2` |
@@ -73,7 +82,7 @@ dws chat group create --name "话题圈" --users userId1,userId2 --thread
 |------|------|----------|
 | `group transfer-owner` | 转让群主 | `--group` + `--user`(userId) 或 `--new-owner`(openDingTalkId) |
 | `group upgrade-to-external` | 将普通群升级为外部群（不可逆，需先确认） | `--group` `--yes`；可选 `--extension`（拓展字段） |
-| `group invite-url` | 获取群邀请链接 | `--group`，可选 `--expires-seconds`，0 表示永久 |
+| `+chat-invite-url` | 获取群邀请链接 | `--group <群名或openConversationId>`；可选 `--expires-seconds` |
 | `group share-invite` | 将指定群的邀请链接分享到另一个会话或单聊用户 | `--source` + `--target` / `--receiver` 二选一 |
 | `group update-icon` | 更新群头像 | `--group` `--icon-media-id` |
 | `group update-settings` | 更新管理员级别的群功能开关 | `--group` `--setting-key` `--status` |
@@ -179,15 +188,14 @@ dws chat group audit-join-validation --group <openConversationId> --record-id 12
 ### 搜索群并发消息
 
 ```bash
-dws chat search --query "项目冲刺" --format json
-dws chat message send --group <openConversationId> --text "请大家看一下最新进展" --format json
+dws chat +send-to-group --group "项目冲刺" --text "请大家看一下最新进展" --format json
 ```
 
 ### 建群并拉人
 
 ```bash
-dws aisearch person --keyword "张三" --dimension name --format json
-dws chat group create --name "Q1 项目冲刺群" --users userId1,userId2 --format json
+dws chat +chat-create --name "Q1 项目冲刺群" --member-query "张三,李四" --format json
+dws chat +chat-create --name "合作群" --member-query "张三,李四" --owner-query "王五" --format json
 dws chat group members add --id <openConversationId> --users userId3,userId4 --format json
 ```
 
@@ -208,7 +216,7 @@ dws chat group-mute-member --group <openConversationId> --users userId3 --mute-t
 ## 常见错误与回退
 
 - 只有数字群号：先 `group get-by-group-id`，不要直接当 `--group`。
-- 找不到群：先扩大 `chat search --query`，不要臆测 openConversationId。
+- 找不到群：使用 `+chat-search --query` 扩大关键词；零命中或多候选时停止，不臆测 openConversationId。
 - 入群审批缺参数：从 `group list-join-validations` 提取 `record-id`、`applicant`、`inviter`。
 - 机器人进群失败：确认当前用户有群管理权限。
 - 分享群邀请目标不明确：`--target` 和 `--receiver` 只能二选一，先确认是发到群/会话还是发给个人。

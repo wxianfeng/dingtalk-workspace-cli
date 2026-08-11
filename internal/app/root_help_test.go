@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/testseam"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 	"github.com/spf13/cobra"
 )
@@ -71,6 +72,39 @@ func TestCalendarEventCreateHelpKeepsRoomsStringMetavar(t *testing.T) {
 
 func TestRootKeepsMainBranchChatCompatibilityCommands(t *testing.T) {
 	root := NewRootCommand()
+	for _, path := range []string{
+		"chat send",
+		"chat history",
+		"im send",
+		"im history",
+	} {
+		command, remaining, err := root.Find(strings.Fields(path))
+		if err != nil {
+			t.Fatalf("find %s: %v", path, err)
+		}
+		if len(remaining) != 0 || !command.Hidden || !command.Runnable() {
+			t.Fatalf("%s compatibility contract: remaining=%v hidden=%v runnable=%v", path, remaining, command.Hidden, command.Runnable())
+		}
+	}
+	for _, tc := range []struct {
+		args []string
+		hint string
+	}{
+		{args: []string{"chat", "send", "--group", "cid-stable", "--text", "hello"}, hint: "dws chat message send"},
+		{args: []string{"im", "send", "--group", "cid-stable", "--text", "hello"}, hint: "dws chat message send"},
+		{args: []string{"chat", "history", "--group", "cid-stable", "--limit", "20"}, hint: "dws chat message list --group <GROUP_OPEN_CONVERSATION_ID>"},
+		{args: []string{"im", "history", "--group", "cid-stable", "--limit", "20"}, hint: "dws chat message list --group <GROUP_OPEN_CONVERSATION_ID>"},
+	} {
+		command := NewRootCommand()
+		command.SilenceErrors = true
+		command.SilenceUsage = true
+		command.SetArgs(tc.args)
+		err := command.Execute()
+		if err == nil || !strings.Contains(err.Error(), "ambiguous command") || !strings.Contains(err.Error(), tc.hint) {
+			t.Fatalf("dws %s error = %v, want migration hint %q", strings.Join(tc.args, " "), err, tc.hint)
+		}
+	}
+
 	listDirect := mustFindCommand(t, root, "chat", "message", "list-direct")
 	for _, flag := range []string{"user", "open-dingtalk-id", "time", "forward", "limit"} {
 		if listDirect.Flags().Lookup(flag) == nil {
@@ -161,9 +195,7 @@ func TestRootChatMediaUploadWithoutAppCredentialsReturnsMigrationValidation(t *t
 		"--file", filePath,
 		"--type", "image",
 	}
-	previousArgs := os.Args
-	os.Args = append([]string{"dws"}, commandArgs...)
-	t.Cleanup(func() { os.Args = previousArgs })
+	testseam.Swap(t, &os.Args, append([]string{"dws"}, commandArgs...))
 
 	root := NewRootCommand()
 	var output bytes.Buffer
@@ -387,20 +419,14 @@ func TestRootKeepsSVIPChatCompatibilityFlags(t *testing.T) {
 	}
 }
 
-func TestCacheRefreshCompatibilityStub(t *testing.T) {
-	cmd := NewRootCommand()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"cache", "refresh", "--format", "json"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("cache refresh compatibility stub: %v\n%s", err, out.String())
+func TestCacheCommandDeprecatedCompatStub(t *testing.T) {
+	root := NewRootCommand()
+	cmd, _, err := root.Find([]string{"cache", "refresh"})
+	if err != nil || cmd == nil || cmd == root {
+		t.Fatalf("dws cache refresh compatibility stub missing: %v", err)
 	}
-	got := out.String()
-	for _, want := range []string{`"status":"deprecated"`, `"command":"dws cache refresh"`, "服务发现已下线"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("cache refresh output missing %q:\n%s", want, got)
-		}
+	if cmd.Hidden || cmd.Deprecated == "" {
+		t.Fatalf("cache refresh must be visible Deprecated: hidden=%v deprecated=%q", cmd.Hidden, cmd.Deprecated)
 	}
 }
 

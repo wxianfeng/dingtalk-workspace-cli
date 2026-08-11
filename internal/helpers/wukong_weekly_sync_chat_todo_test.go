@@ -69,12 +69,17 @@ func executeWukongWeeklySyncCommand(
 	deps.Out.errW = &stderr
 
 	root := build()
-	root.PersistentFlags().Bool("dry-run", false, "preview without executing")
-	root.PersistentFlags().Bool("yes", false, "confirm execution")
+	if root.PersistentFlags().Lookup("dry-run") == nil {
+		root.PersistentFlags().Bool("dry-run", false, "preview without executing")
+	}
+	if root.PersistentFlags().Lookup("yes") == nil {
+		root.PersistentFlags().Bool("yes", false, "confirm execution")
+	}
 	root.SilenceErrors = true
 	root.SilenceUsage = true
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
+	root.SetIn(strings.NewReader(""))
 	root.SetArgs(args)
 	err := root.Execute()
 	return stdout.String(), stderr.String(), err
@@ -347,6 +352,11 @@ func TestCrossPlatformCoverageWukongWeeklyChatUpgradeValidationAndSafety(t *test
 	if findErr != nil {
 		t.Fatal(findErr)
 	}
+	// Contract ConfirmSafety wraps RunE; skip it with --yes to exercise flag validation.
+	if upgrade.Flags().Lookup("yes") == nil {
+		upgrade.Flags().Bool("yes", false, "")
+	}
+	_ = upgrade.Flags().Set("yes", "true")
 	if err := upgrade.RunE(upgrade, nil); err == nil || !strings.Contains(err.Error(), "--group") {
 		t.Fatalf("direct missing group error = %v", err)
 	}
@@ -553,12 +563,12 @@ func TestCrossPlatformCoverageWukongWeeklyTodoTagValidation(t *testing.T) {
 		},
 		{
 			name:    "delete missing codes",
-			args:    []string{"tag", "delete"},
+			args:    []string{"tag", "delete", "--yes"},
 			wantErr: "--tag-codes",
 		},
 		{
 			name:    "delete blank codes",
-			args:    []string{"tag", "delete", "--tag-codes", ", ,"},
+			args:    []string{"tag", "delete", "--tag-codes", ", ,", "--yes"},
 			wantErr: "non-empty code",
 		},
 		{

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd/contract"
 	"github.com/spf13/cobra"
 )
 
@@ -141,10 +142,24 @@ func proxySubCmd(use, targetProduct, targetPath string, flagRenames map[string]s
 // ──────────────────────────────────────────────────────────
 
 func newWikiCommand() *cobra.Command {
+	// Product-level Agent routing Decl (migrated from selection/wiki.json
+	// products.wiki). Catalog assembly stamps provenance contract_final.
+	contract.RegisterProductDecl(contract.ProductDecl{
+		ID: "wiki",
+		Selection: contract.ProductSelectionDecl{
+			AgentSummary: "管理钉钉知识库空间、节点与成员权限",
+			UseWhen: []string{
+				"查找或管理知识库、知识库内节点及知识库成员时",
+			},
+			AvoidWhen: []string{
+				"需要编辑在线文档正文时使用 doc；只管理钉盘普通文件时使用 drive",
+			},
+		},
+	})
 	root := &cobra.Command{
 		Use:   "wiki",
-		Short: "知识库 / 空间管理 / 节点管理 / 成员管理",
-		Long:  `管理钉钉文档知识库：空间管理（创建/查看/列出/搜索/删除）、节点管理（列出/创建/复制/移动/删除）、成员管理（添加/更新/列出/移除）。`,
+		Short: "知识库 / 空间管理 / 节点管理 / 成员管理 / 动态查询",
+		Long:  `管理钉钉文档知识库：空间管理（创建/查看/列出/搜索/删除）、节点管理（列出/创建/复制/移动/删除）、成员管理（添加/更新/列出/移除）、动态查询（知识库活动动态）。`,
 		RunE:  groupRunE,
 	}
 
@@ -175,6 +190,41 @@ func newWikiCommand() *cobra.Command {
 			return callMCPTool("create_wikiSpace", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(spaceCreateCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "medium",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "create_wikiSpace",
+				CanonicalPath:  "wiki.create_wikiSpace",
+				CLIPath:        "wiki space create",
+				PrimaryCLIPath: "wiki space create",
+			},
+			Description: "创建一个新的钉钉文档知识库（WikiSpace）",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "create_wikiSpace"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "创建一个新的钉钉文档知识库（WikiSpace）",
+				UseWhen:      []string{"用户要新建一个知识库容器时"},
+				AvoidWhen:    []string{"在已有知识库内建文档/文件夹用 node create，不要反复 create space"},
+				Examples: []string{
+					"dws wiki space create --name \"产品文档库\" --format json",
+					"dws wiki space create --name \"技术方案\" --desc \"团队技术方案归档\" --format json",
+				},
+			},
+			// name is validated in RunE; publish required via ParamDecl
+			Parameters: []contract.ParamDecl{
+				{Name: "desc", Property: "description"},
+				{Name: "name", Required: boolPtr(true)},
+			},
+		},
+	})
 
 	spaceGetCmd := &cobra.Command{
 		Use:   "get",
@@ -195,6 +245,37 @@ func newWikiCommand() *cobra.Command {
 			})
 		},
 	}
+	DeclareLeafMetadata(spaceGetCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "get_wikiSpace",
+				CanonicalPath:  "wiki.get_wikiSpace",
+				CLIPath:        "wiki space get",
+				PrimaryCLIPath: "wiki space get",
+			},
+			Description: "获取指定知识库的详细信息，包括名称、描述、创建者、创建时间、成员数量等",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "get_wikiSpace"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "获取指定知识库的详细信息，包括名称、描述、创建者、创建时间、成员数量等",
+				UseWhen:      []string{"查看指定知识库详情（名称、描述、创建者等）时"},
+				AvoidWhen:    []string{"列知识库用 list；删库用 space delete（需确认）"},
+				Examples:     []string{"dws wiki space get --workspace <workspaceId> --format json"},
+			},
+			// workspace is validated in RunE; publish required via ParamDecl
+			Parameters: []contract.ParamDecl{
+				{Name: "workspace", Property: "workspaceId", Required: boolPtr(true)},
+			},
+		},
+	})
 
 	spaceListCmd := &cobra.Command{
 		Use:   "list",
@@ -244,6 +325,42 @@ func newWikiCommand() *cobra.Command {
 			return callMCPTool("list_wikiSpaces", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(spaceListCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "list_wikiSpaces",
+				CanonicalPath:  "wiki.list_wikiSpaces",
+				CLIPath:        "wiki space list",
+				PrimaryCLIPath: "wiki space list",
+			},
+			Description: "列出当前用户可访问的知识库或钉盘空间",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "composite",
+				Availability: "available",
+				Reason:       "The CLI command routes by --type between wiki/list_wikiSpaces and drive/list_spaces, so the reviewed executable wrapper has no single direct MCP interface.",
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "列出当前用户可访问的知识库或钉盘空间",
+				UseWhen: []string{
+					"列出组织知识库（默认）、我的文档(--type myWikiSpace)、钉盘企业空间(--type orgSpace)或我的文件(--type mySpace)时",
+					"需要 workspaceId / rootFolderId 作为后续 node/drive 操作前置时",
+				},
+				AvoidWhen: []string{
+					"按名称搜知识库用 space search",
+					"看单个知识库详情用 space get",
+				},
+				Examples: []string{
+					"dws wiki space list --format json",
+					"dws wiki space list --type myWikiSpace --format json",
+				},
+			},
+		},
+	})
 
 	spaceSearchCmd := &cobra.Command{
 		Use:   "search",
@@ -275,6 +392,37 @@ func newWikiCommand() *cobra.Command {
 			return callMCPTool("search_wikiSpaces", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(spaceSearchCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "search_wikiSpaces",
+				CanonicalPath:  "wiki.search_wikiSpaces",
+				CLIPath:        "wiki space search",
+				PrimaryCLIPath: "wiki space search",
+			},
+			Description: "根据关键词搜索当前用户有权限访问的知识库列表，匹配知识库名称和描述",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "search_wikiSpaces"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "根据关键词搜索当前用户有权限访问的知识库列表，匹配知识库名称和描述",
+				UseWhen:      []string{"按关键词搜索有权访问的组织知识库时"},
+				AvoidWhen:    []string{"直接列全部知识库用 space list；我的文档用 list --type myWikiSpace"},
+				Examples:     []string{"dws wiki space search --query \"产品文档\" --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "limit", Property: "pageSize"},
+				{Name: "query", Property: "keyword"},
+			},
+		},
+	})
 
 	// space create flags
 	spaceCreateCmd.Flags().String("name", "", "知识库名称 (必填，不超过 100 字符)")
@@ -321,14 +469,44 @@ func newWikiCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if !confirmDelete("知识库", workspaceID) {
-				return nil
-			}
 			return callMCPTool("delete_wikiSpace", map[string]any{
 				"workspaceId": workspaceID,
 			})
 		},
 	}
+	DeclareLeafMetadata(spaceDeleteCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "destructive", Risk: "high",
+			Confirmation: "user_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "delete_wikiSpace",
+				CanonicalPath:  "wiki.delete_wikiSpace",
+				CLIPath:        "wiki space delete",
+				PrimaryCLIPath: "wiki space delete",
+			},
+			Description: "将指定知识库移入回收站",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "delete_wikiSpace"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "将指定知识库移入回收站",
+				UseWhen:      []string{"用户明确要求删除整个知识库（移入回收站），且已确认 workspace 与影响范围时"},
+				AvoidWhen: []string{
+					"只删库内某个节点用 wiki node delete",
+					"未确认或只要看详情用 space get",
+				},
+				Examples: []string{"dws wiki space delete --workspace <workspaceId> --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 	spaceDeleteCmd.Flags().String("workspace", "", "知识库 ID 或 URL (必填)")
 	spaceDeleteCmd.Flags().String("workspace-id", "", "")
 	_ = spaceDeleteCmd.Flags().MarkHidden("workspace-id")
@@ -387,6 +565,44 @@ func newWikiCommand() *cobra.Command {
 			})
 		},
 	}
+	DeclareLeafMetadata(memberAddCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "medium",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "add_member",
+				CanonicalPath:  "wiki.add_member",
+				CLIPath:        "wiki member add",
+				PrimaryCLIPath: "wiki member add",
+			},
+			Description: "为指定知识库添加一个或多个成员，并授予指定角色",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "add_member"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "为指定知识库添加一个或多个成员，并授予指定角色",
+				UseWhen:      []string{"给知识库容器添加成员（USER + 角色）；新员工入职开通整库访问时"},
+				AvoidWhen: []string{
+					"「我的文档」不支持容器成员——改用 drive/doc permission add 做节点授权",
+					"单篇文档分享用节点 permission，不要用 member add",
+				},
+				Examples: []string{
+					"dws wiki member add --workspace <WS_ID> --users uid1 --role READER --format json",
+					"dws wiki member add --workspace <WS_ID> --users uid1,uid2 --role EDITOR --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "role", Property: "roleId"},
+				{Name: "users", Property: "userIds"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 
 	memberAddCmd.Flags().String("workspace", "", "知识库 ID 或 URL (必填)")
 	memberAddCmd.Flags().String("users", "", "被添加的用户 userId 列表，逗号分隔 (必填，单次最多 30 个)")
@@ -432,6 +648,38 @@ func newWikiCommand() *cobra.Command {
 			})
 		},
 	}
+	DeclareLeafMetadata(memberUpdateCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "medium",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "update_member",
+				CanonicalPath:  "wiki.update_member",
+				CLIPath:        "wiki member update",
+				PrimaryCLIPath: "wiki member update",
+			},
+			Description: "更新指定知识库已有成员的角色",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "update_member"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "更新指定知识库已有成员的角色",
+				UseWhen:      []string{"调整知识库成员角色（如升为 EDITOR/MANAGER）时"},
+				AvoidWhen:    []string{"新加成员用 add；移除用 remove；OWNER 不可经此变更"},
+				Examples:     []string{"dws wiki member update --workspace <WS_ID> --users uid1 --role EDITOR --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "role", Property: "roleId"},
+				{Name: "users", Property: "userIds"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 
 	memberUpdateCmd.Flags().String("workspace", "", "知识库 ID 或 URL (必填)")
 	memberUpdateCmd.Flags().String("users", "", "被更新的用户 userId 列表，逗号分隔 (必填，单次最多 30 个)")
@@ -474,6 +722,41 @@ ORG 类型授权不会出现在查询结果中。`,
 			return callMCPTool("list_member", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(memberListCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "list_member",
+				CanonicalPath:  "wiki.list_member",
+				CLIPath:        "wiki member list",
+				PrimaryCLIPath: "wiki member list",
+			},
+			Description: "查询指定知识库的成员列表，返回每位成员的 userId、姓名、角色等信息",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "list_member"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "查询指定知识库的成员列表，返回每位成员的 userId、姓名、角色等信息",
+				UseWhen:      []string{"查看知识库成员名单与角色时"},
+				AvoidWhen: []string{
+					"返回无 userId：要 update/remove 需另用 contact user search 反查",
+					"增删改成员用 add/update/remove",
+				},
+				Examples: []string{"dws wiki member list --workspace <WS_ID> --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "filter-role", Property: "filterRoleIds"},
+				{Name: "limit", Property: "maxResults"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 
 	memberListCmd.Flags().String("workspace", "", "知识库 ID 或 URL (必填)")
 	memberListCmd.Flags().Int("limit", 30, "返回成员数上限，默认 30，最大 200")
@@ -509,6 +792,40 @@ ORG 类型授权不会出现在查询结果中。`,
 			})
 		},
 	}
+	DeclareLeafMetadata(memberRemoveCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "medium",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "remove_member",
+				CanonicalPath:  "wiki.remove_member",
+				CLIPath:        "wiki member remove",
+				PrimaryCLIPath: "wiki member remove",
+			},
+			Description: "从指定知识库中移除一个或多个成员（仅支持 USER 类型）",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "remove_member"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "从指定知识库中移除一个或多个成员（仅支持 USER 类型）",
+				UseWhen:      []string{"从知识库移除成员访问（离职/清理）时"},
+				AvoidWhen: []string{
+					"改角色用 update；节点级权限用 drive permission remove",
+					"OWNER 不可移除此接口",
+				},
+				Examples: []string{"dws wiki member remove --workspace <WS_ID> --users uid1 --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "users", Property: "userIds"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 	memberRemoveCmd.Flags().String("workspace", "", "知识库 ID 或 URL (必填)")
 	memberRemoveCmd.Flags().String("users", "", "被移除的用户 userId 列表，逗号分隔 (必填，单次最多 30 个)")
 	memberRemoveCmd.Flags().String("user", "", "")
@@ -570,6 +887,45 @@ ORG 类型授权不会出现在查询结果中。`,
 			return callMCPToolOnServer("doc", "list_nodes", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(nodeListCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "list_nodes",
+				CanonicalPath:  "wiki.list_nodes",
+				CLIPath:        "wiki node list",
+				PrimaryCLIPath: "wiki node list",
+			},
+			Description: "列出指定知识库下的直接子节点（文档、文件夹、表格等）",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "doc", RPCName: "list_nodes"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "列出指定知识库下的直接子节点（文档、文件夹、表格等）",
+				UseWhen:      []string{"在已知 workspace 下浏览知识库根目录或某文件夹子节点时"},
+				AvoidWhen: []string{
+					"库内关键词搜索用 node search；全局搜用 drive search",
+					"读文档内容拿到 nodeId 后用 doc read",
+				},
+				Examples: []string{
+					"dws wiki node list --workspace <workspaceId> --format json",
+					"dws wiki node list --workspace <workspaceId> --folder <parentNodeId> --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "cursor", Property: "pageToken"},
+				{Name: "folder", Property: "folderId"},
+				{Name: "limit", Property: "pageSize"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 	nodeListCmd.Flags().String("workspace", "", "知识库 ID (必填)")
 	nodeListCmd.Flags().String("folder", "", "父节点 nodeId (选填，不传则列出根目录)")
 	nodeListCmd.Flags().Int("limit", 0, "每页数量 (默认 50，最大 50)")
@@ -617,6 +973,44 @@ ORG 类型授权不会出现在查询结果中。`,
 			return callMCPToolOnServer("doc", "create_file", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(nodeCreateCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "medium",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "create_file",
+				CanonicalPath:  "wiki.create_file",
+				CLIPath:        "wiki node create",
+				PrimaryCLIPath: "wiki node create",
+			},
+			Description: "在指定知识库中创建文档、文件夹或其他类型的节点",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "doc", RPCName: "create_file"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "在指定知识库中创建文档、文件夹或其他类型的节点",
+				UseWhen:      []string{"在知识库内创建空节点：adoc/axls/appt/adraw/amind/able/folder（必须 --workspace）时"},
+				AvoidWhen: []string{
+					"要带初始 Markdown 的文字文档可用 doc create",
+					"钉盘普通文件夹用 drive mkdir（无需 workspace）",
+					"type 不要用 asheet，在线表格用 axls",
+				},
+				Examples: []string{
+					"dws wiki node create --workspace <workspaceId> --name \"新文档\" --format json",
+					"dws wiki node create --workspace <workspaceId> --name \"方案目录\" --type folder --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "folder", Property: "folderId"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 	nodeCreateCmd.Flags().String("workspace", "", "知识库 ID (必填)")
 	nodeCreateCmd.Flags().String("name", "", "节点名称 (必填)")
 	nodeCreateCmd.Flags().String("type", "adoc", "节点类型: adoc / axls / able / appt / adraw / amind / folder（asheet 不支持）")
@@ -653,6 +1047,41 @@ ORG 类型授权不会出现在查询结果中。`,
 			return callMCPToolOnServer("doc", "copy_document", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(nodeCopyCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "medium",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "node_copy",
+				CanonicalPath:  "wiki.node_copy",
+				CLIPath:        "wiki node copy",
+				PrimaryCLIPath: "wiki node copy",
+			},
+			Description: "将知识库中的节点复制到指定位置",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "doc", RPCName: "copy_document"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "将知识库中的节点复制到指定位置",
+				UseWhen:      []string{"在知识库上下文内复制节点到同库某文件夹（需 --workspace + --node）时"},
+				AvoidWhen: []string{
+					"跨产品/默认文档空间复制优先 dws drive copy",
+					"要移动不留副本用 node move",
+				},
+				Examples: []string{"dws wiki node copy --workspace <workspaceId> --node <nodeId> --folder <targetFolderId> --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "folder", Property: "targetFolderId"},
+				{Name: "node", Property: "nodeId"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 	nodeCopyCmd.Flags().String("workspace", "", "知识库 ID (必填)")
 	nodeCopyCmd.Flags().String("node", "", "源节点 ID (必填)")
 	nodeCopyCmd.Flags().String("folder", "", "目标文件夹 nodeId (选填)")
@@ -690,6 +1119,38 @@ ORG 类型授权不会出现在查询结果中。`,
 			return callMCPToolOnServer("doc", "move_document", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(nodeMoveCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "medium",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "node_move",
+				CanonicalPath:  "wiki.node_move",
+				CLIPath:        "wiki node move",
+				PrimaryCLIPath: "wiki node move",
+			},
+			Description: "将知识库中的节点移动到指定位置",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "doc", RPCName: "move_document"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "将知识库中的节点移动到指定位置",
+				UseWhen:      []string{"在知识库内移动节点到目标文件夹时"},
+				AvoidWhen:    []string{"要保留副本用 node copy / drive copy"},
+				Examples:     []string{"dws wiki node move --workspace <workspaceId> --node <nodeId> --folder <targetFolderId> --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "folder", Property: "targetFolderId"},
+				{Name: "node", Property: "nodeId"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
 	nodeMoveCmd.Flags().String("workspace", "", "知识库 ID (必填)")
 	nodeMoveCmd.Flags().String("node", "", "源节点 ID (必填)")
 	nodeMoveCmd.Flags().String("folder", "", "目标文件夹 nodeId (选填)")
@@ -713,14 +1174,44 @@ ORG 类型授权不会出现在查询结果中。`,
 			if err != nil {
 				return err
 			}
-			if !confirmDelete("知识库节点", nodeID) {
-				return nil
-			}
 			return callMCPToolOnServer("doc", "delete_document", map[string]any{
 				"nodeId": nodeID,
 			})
 		},
 	}
+	DeclareLeafMetadata(nodeDeleteCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "destructive", Risk: "high",
+			Confirmation: "user_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "delete_document",
+				CanonicalPath:  "wiki.delete_document",
+				CLIPath:        "wiki node delete",
+				PrimaryCLIPath: "wiki node delete",
+			},
+			Description: "将知识库中的节点移入回收站",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "doc", RPCName: "delete_document"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "将知识库中的节点移入回收站",
+				UseWhen:      []string{"用户确认后删除知识库内节点（移入回收站；需 --workspace 校验权限）时"},
+				AvoidWhen: []string{
+					"删整个知识库用 space delete",
+					"未确认或 node 不明时不要删",
+				},
+				Examples: []string{"dws wiki node delete --workspace <workspaceId> --node <nodeId> --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "node", Property: "nodeId"},
+			},
+		},
+	})
 	nodeDeleteCmd.Flags().String("workspace", "", "知识库 ID (必填，用于权限校验)")
 	nodeDeleteCmd.Flags().String("node", "", "节点 ID (必填)")
 
@@ -759,6 +1250,42 @@ ORG 类型授权不会出现在查询结果中。`,
 			return callMCPToolOnServer("doc", "search_documents", toolArgs)
 		},
 	}
+	DeclareLeafMetadata(nodeSearchCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "node_search",
+				CanonicalPath:  "wiki.node_search",
+				CLIPath:        "wiki node search",
+				PrimaryCLIPath: "wiki node search",
+			},
+			Description: "在指定知识库内搜索文档/文件夹/表格等节点",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "doc", RPCName: "search_documents"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "在指定知识库内搜索文档/文件夹/表格等节点",
+				UseWhen:      []string{"在指定知识库内按关键词搜节点（可 --extensions）时"},
+				AvoidWhen:    []string{"全局/钉盘搜索用 drive search；浏览目录用 node list"},
+				Examples: []string{
+					"dws wiki node search --workspace <workspaceId> --query \"方案\" --format json",
+					"dws wiki node search --workspace <workspaceId> --query \"周报\" --extensions adoc --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "cursor", Property: "pageToken"},
+				{Name: "limit", Property: "pageSize"},
+				{Name: "query", Property: "keyword"},
+				{Name: "workspace", Property: "workspaceIds"},
+			},
+		},
+	})
 	nodeSearchCmd.Flags().String("workspace", "", "知识库 ID (必填)")
 	nodeSearchCmd.Flags().String("query", "", "搜索关键词 (必填)")
 	nodeSearchCmd.Flags().String("keyword", "", "--query 的别名")
@@ -778,6 +1305,102 @@ ORG 类型授权不会出现在查询结果中。`,
 	nodeCmd.AddCommand(nodeListCmd, nodeCreateCmd, nodeCopyCmd, nodeMoveCmd, nodeDeleteCmd, nodeSearchCmd)
 
 	root.AddCommand(nodeCmd)
+
+	// ── feed (知识库动态查询) ─────────────────────────────────
+	feedCmd := &cobra.Command{
+		Use:   "feed",
+		Short: "知识库动态查询",
+		Long:  `查询知识库的动态：谁在什么时间更新/上传/评论了哪些文档。`,
+		RunE:  groupRunE,
+	}
+
+	feedListCmd := &cobra.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "查询知识库动态列表",
+		Long: `查询指定知识库的动态列表，返回动态类型、时间、内容摘要等信息。
+
+通过 --workspace 指定知识库，支持传入知识库 ID 或知识库 URL。
+支持分页，通过 --cursor 传入上次返回的 nextToken 获取下一页。
+
+权限要求：调用者需具备知识库的成员权限，非成员会被拒绝访问。`,
+		Example: `  dws wiki feed list --workspace <workspaceId>
+  dws wiki feed list --workspace <workspaceId> --limit 10
+  dws wiki feed list --workspace <workspaceId> --cursor <nextToken>`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			workspaceID, err := mustFlagOrFallback(cmd, "workspace", "workspace-id")
+			if err != nil {
+				return err
+			}
+			toolArgs := map[string]any{
+				"workspaceId": workspaceID,
+			}
+			if v, _ := cmd.Flags().GetInt("limit"); v > 0 {
+				toolArgs["maxResults"] = v
+			}
+			if v := flagOrFallback(cmd, "cursor", "page-token"); v != "" {
+				toolArgs["nextToken"] = v
+			}
+			if cmd.Flags().Changed("exclude-file") {
+				v, _ := cmd.Flags().GetBool("exclude-file")
+				toolArgs["excludeFile"] = v
+			}
+			return callMCPTool("list_workspace_feeds", toolArgs)
+		},
+	}
+	DeclareLeafMetadata(feedListCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "wiki",
+				Name:           "list_workspace_feeds",
+				CanonicalPath:  "wiki.list_workspace_feeds",
+				CLIPath:        "wiki feed list",
+				PrimaryCLIPath: "wiki feed list",
+			},
+			Description: "查询指定知识库的动态列表，返回动态类型、时间、内容摘要等信息",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "wiki", RPCName: "list_workspace_feeds"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "查询知识库的活动动态：谁在什么时间更新/上传/评论了哪些文档",
+				UseWhen: []string{
+					"用户问某个知识库最近有什么更新、谁改了什么、有哪些评论等协作动态时",
+					"需要巡检知识库变更并按时间线汇总成动态摘要时",
+				},
+				AvoidWhen: []string{
+					"要看知识库当前有哪些节点用 node list；库内按关键词找文档用 node search",
+					"要读某篇文档正文用 doc read；跨库全局找文件用 drive search",
+				},
+				Examples: []string{
+					"dws wiki feed list --workspace <workspaceId> --format json",
+					"dws wiki feed list --workspace <workspaceId> --limit 10 --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "cursor", Property: "nextToken"},
+				{Name: "exclude-file", Property: "excludeFile"},
+				{Name: "limit", Property: "maxResults"},
+				{Name: "workspace", Property: "workspaceId"},
+			},
+		},
+	})
+	feedListCmd.Flags().String("workspace", "", "知识库 ID 或 URL (必填)")
+	feedListCmd.Flags().Int("limit", 0, "每页数量 (默认 20，最大 50)")
+	feedListCmd.Flags().String("cursor", "", "分页游标 (首页留空)")
+	feedListCmd.Flags().Bool("exclude-file", false, "是否排除文件相关的动态 (默认 false)")
+	feedListCmd.Flags().String("workspace-id", "", "")
+	_ = feedListCmd.Flags().MarkHidden("workspace-id")
+	RegisterCrossProductAliases(feedListCmd)
+
+	feedCmd.AddCommand(feedListCmd)
+
+	root.AddCommand(feedCmd)
 
 	// ── [PROXY] wiki create/get/list/search → wiki space create/get/list/search ──
 	// Agent 常省略 "space" 直接输入 dws wiki list，透明转发到 wiki space 对应命令

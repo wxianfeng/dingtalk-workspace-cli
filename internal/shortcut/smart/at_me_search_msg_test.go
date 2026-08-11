@@ -20,7 +20,7 @@ import (
 
 const testCipher = "SwzNkAraDE6lUHUNlVT3mjFdbxL6dWvmt77XtjACdpJx9VFibzTbW9KtDbkzGOYP||2||1||1"
 
-func TestAtMeProject(t *testing.T) {
+func TestCrossPlatformCoverageAtMeProject(t *testing.T) {
 	// nested sender object + plain text
 	row := atMeProject(map[string]any{
 		"sender":             map[string]any{"name": "念晨"},
@@ -87,7 +87,7 @@ func TestAtMeProject(t *testing.T) {
 	}
 }
 
-func TestSearchMsgProject(t *testing.T) {
+func TestCrossPlatformCoverageSearchMsgProject(t *testing.T) {
 	// nested sender + plain text + messageId
 	row := searchMsgProject(map[string]any{
 		"sender":     map[string]any{"nick": "千启"},
@@ -129,7 +129,7 @@ func TestSearchMsgProject(t *testing.T) {
 // TestSenderHelpers exercises the atMe/searchMsg sender key families directly:
 // a senderName-family key (first probe loop), a flat string under "sender"
 // (second loop), and the "null" sentinel normalisation.
-func TestSenderHelpers(t *testing.T) {
+func TestCrossPlatformCoverageSenderHelpers(t *testing.T) {
 	cases := []struct {
 		fn   func(map[string]any) any
 		name string

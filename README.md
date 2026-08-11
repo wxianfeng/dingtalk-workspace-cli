@@ -71,9 +71,7 @@ The installer ships skills in one of two layouts. CLI commands (`dws aitable ...
 | Mode | What gets installed | Best for |
 |------|----------------------|----------|
 | **mono** (stable, default) | One `dws` skill covering all products | Cross-product workflows; single entry point |
-| **multi** 🧪 **EXPERIMENTAL** | Per-product skills (`dingtalk-aitable`, `dingtalk-calendar`, `dingtalk-chat`, ...) | Single-product tasks; smaller context per call |
-
-> 🧪 **`multi` is currently EXPERIMENTAL / preview.** All product-scoped skills pass the dispatch verifier, but interface, naming and cross-skill references may change in future releases. For production / shared environments, prefer `mono`. File issues if you hit problems.
+| **multi** | Per-product skills (`dingtalk-aitable`, `dingtalk-calendar`, `dingtalk-chat`, ...) | Single-product tasks; smaller context per call |
 
 How to pick:
 
@@ -371,7 +369,7 @@ dws contact user get-self --jq '.result[0].orgEmployeeModel | {name: .orgUserNam
 Use Cobra help and Schema for different parts of the command contract:
 
 - `dws <path> --help` is the source of truth for whether a command exists and which flags the binary accepts.
-- `dws schema "<path>"` is the Agent contract for command selection, parameter mappings and constraints, risk, and confirmation semantics.
+- `dws schema "<path>" --compact` is the normative Agent view for command selection, CLI parameters and constraints, risk, and confirmation; use a full leaf with a narrow `--jq` projection for mapping or provenance audits.
 - If Help and Schema disagree, treat it as contract drift: pass only flags accepted by Cobra and use the more conservative safety semantics.
 - Schema describes commands; it does not read or search DingTalk business data. Execute the real product command after discovery.
 
@@ -380,23 +378,23 @@ Use Cobra help and Schema for different parts of the command contract:
 dws aitable record query --help
 
 # Discover within a product, then inspect the selected leaf contract
-dws schema aitable
-dws schema "aitable record query"
+dws schema aitable --compact
+dws schema "aitable record query" --compact
 
 # Execute the real business query
 dws aitable record query --base-id BASE_ID --table-id TABLE_ID --limit 10
 ```
 
-`dws schema --all` exports the complete contract for tooling, CI, audits, and compatibility baselines. Agents should prefer product/group discovery followed by a leaf query to avoid loading the full Catalog into context.
+`dws schema --all` exports the complete contract for tooling, CI, audits, and compatibility baselines. Agents should query progressively with `--compact`; its positive field allowlist prevents new full/audit fields from silently expanding Agent context.
 
 ### Agent Skills
 
 The repo ships a complete Agent Skill system under `skills/`, organized into two layouts:
 
 - `skills/mono/` — single-skill layout (one `SKILL.md` + `references/products/`), recommended default.
-- `skills/multi/` — per-product skills (`dingtalk-aitable/`, `dingtalk-calendar/`, `dingtalk-chat/`, ...), each with its own `SKILL.md`. 🧪 **EXPERIMENTAL / preview — see banner in each multi `SKILL.md` for caveats.**
+- `skills/multi/` — per-product skills (`dingtalk-aitable/`, `dingtalk-calendar/`, `dingtalk-chat/`, ...), each with its own `SKILL.md`.
 
-Shared reviewed inputs for Schema generation live separately under `internal/cli/schema_hints/`. They are not Agent Skills and are excluded from binaries and release skill bundles.
+Leaf safety/parameters/selection prose for Schema generation come from ProductDecl / ContractFinal declarations in Go. The former `internal/cli/schema_hints/` HintFile tree is fully retired and must not reappear.
 
 After installing, AI tools like Claude Code / Cursor can operate DingTalk directly through natural language:
 
@@ -443,7 +441,6 @@ Env vars: `DWS_SKILL_MODE=mono|multi` (also honored by `install.sh` / `install.p
 | Intent guide | `skills/mono/references/intent-guide.md` | Disambiguation for confusing scenarios (e.g. report vs todo) |
 | Global reference | `skills/mono/references/global-reference.md` | Auth, output formats, global flags |
 | Error codes | `skills/mono/references/error-codes.md` | Error codes + debugging workflows |
-| Recovery guide | `skills/mono/references/recovery-guide.md` | `RECOVERY_EVENT_ID` handling |
 | Ready-made scripts | `skills/mono/scripts/*.py` | 13 batch operation scripts (see below) |
 
 <details>
@@ -474,7 +471,7 @@ Env vars: `DWS_SKILL_MODE=mono|multi` (also honored by `install.sh` / `install.p
 <details>
 <summary><strong>Personal Event Subscription</strong> — real-time DingTalk messages for event-driven agents</summary>
 
-`dws event consume` subscribes as the currently logged-in user over a managed Stream WebSocket and emits each event as one NDJSON line on stdout. The public catalog covers scoped and all one-to-one/group messages, specified senders, read/recall/reaction events, and group title/disband lifecycle events.
+`dws event consume` subscribes as the currently logged-in user over a managed Stream WebSocket and emits each event as one NDJSON line on stdout. The public catalog covers scoped and all one-to-one/group messages, specified senders, read/recall/reaction events, group lifecycle events, and six OA approval task/instance events.
 
 The default `ndjson`, `json`, and `pretty` output preserves the transport envelope (`type`, `event_type`, string `data`, and `headers`) for existing scripts; `compact` retains its existing processor. Add `--flatten` to emit the stable top-level business fields used by Agent workflows. `--format` controls JSON serialization; `--flatten` controls the data structure and cannot be combined with `-f raw` or `--debug-raw-events`.
 
@@ -484,28 +481,33 @@ For an event-focused installation, use the official convenience installer:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install-event.sh | sh
+
+# Or install the standalone multi skill from an existing dws installation
+dws skill setup --mode multi -s event
 ```
 
 ```bash
 # Inspect the public personal event catalog and schema
 dws event list
 dws event schema user_im_message_receive_o2o --flatten
+dws event list --category oa
+dws event schema user_oa_approval_task_created --flatten
 
 # Listen for messages that mention the current user
-dws event consume user_im_message_receive_at --flatten -f ndjson
+dws event +listen-im --kind at-me -f ndjson
 
-# Listen for one-to-one messages with a specified user
-dws event consume user_im_message_receive_o2o --user <userId> --flatten -f ndjson
+# Listen for messages from a specified sender
+dws event +listen-im --kind sender --user <userId> -f ndjson
 
 # Listen by openDingtalkId (external contact, bot, or cross-organization identity)
-dws event consume user_im_message_receive_o2o --open-dingtalk-id <openDingtalkId> --flatten -f ndjson
+dws event +listen-im --kind sender --open-dingtalk-id <openDingtalkId> -f ndjson
 
 # Listen for messages in a specified group
-dws event consume user_im_message_receive_group --group <openConversationId> --flatten -f ndjson
+dws event +listen-im --kind group --chat-id <openConversationId> -f ndjson
 
 # Listen for all one-to-one or all group messages
-dws event consume user_im_message_receive_o2o_all --flatten -f ndjson
-dws event consume user_im_message_receive_group_all --flatten -f ndjson
+dws event +listen-im --kind all-direct -f ndjson
+dws event +listen-im --kind all-group -f ndjson
 
 # Listen for a specified group's title changes, member changes, or disband event
 dws event consume user_im_group_updated --group <openConversationId> --flatten -f ndjson
@@ -513,14 +515,19 @@ dws event consume user_im_group_member_added --group <openConversationId> --flat
 dws event consume user_im_group_member_exited --group <openConversationId> --flatten -f ndjson
 dws event consume user_im_group_disbanded --group <openConversationId> --flatten -f ndjson
 
-# Listen for multiple events for the same user in one process
+# Listen for messages, reads, and recalls from the same sender in one process
+dws event +listen-im --kind sender --user <userId> \
+  --events message,read,recall -f ndjson
+
+# Listen for all six public OA approval events in one process
 dws event consume \
-  user_im_message_receive_o2o \
-  user_im_message_read_o2o \
-  user_im_message_recall_o2o \
-  --user <userId> \
-  --flatten \
-  -f ndjson
+  user_oa_approval_task_created \
+  user_oa_approval_task_finished \
+  user_oa_approval_task_redirected \
+  user_oa_approval_instance_started \
+  user_oa_approval_instance_terminated \
+  user_oa_approval_instance_finished \
+  --flatten -f ndjson
 
 # Inspect local consumers and cancel a subscription
 dws event status
@@ -624,7 +631,7 @@ dws aitable record query --base-id BASE_ID --tabel-id TABLE_ID       # --tabel-i
 ```bash
 # Built-in jq expressions
 dws aitable record query --base-id BASE_ID --table-id TABLE_ID --jq '.invocation.params'
-dws schema "dev app create" --jq '.tool.required'
+dws schema "dev app create" --jq '.parameters'
 
 # Return only specific fields
 dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocation,response
@@ -636,9 +643,9 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --fields invocati
 <summary><strong>Schema Introspection</strong> — Agent command discovery and execution contracts</summary>
 
 ```bash
-dws schema aitable                                      # discover product commands
-dws schema "aitable record query"                       # view the selected leaf contract
-dws schema "aitable record query" --jq '.tool.required' # view required fields
+dws schema aitable --compact                            # discover product commands
+dws schema "aitable record query" --compact             # view the selected Agent leaf contract
+dws schema "aitable record query" --jq '[.parameters | to_entries[] | select(.value.required)]' # view required fields
 dws schema --all                                        # full export for CI/audit/baselines
 ```
 

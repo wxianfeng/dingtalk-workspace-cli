@@ -16,12 +16,16 @@ import (
 )
 
 const (
-	publicShortcutCount          = 265
-	schemaPublishedShortcutCount = 215
+	publicShortcutCount = 357
+	// schemaPublishedShortcutCount counts every delivered *.shortcut_* tool,
+	// including hidden leaves such as minutes.shortcut_minutes_search.
+	schemaPublishedShortcutCount = 358
+	// publiclyDeliveredShortcutCount is the public-catalog subset of that surface.
+	publiclyDeliveredShortcutCount = 357
 )
 
-func TestEmbeddedSchemaCoversOrExactlyExcludesEveryPublicShortcutContract(t *testing.T) {
-	tools := embeddedSchemaAllToolsForHelpFlagTest(t, NewRootCommand())
+func TestDeliverySchemaCoversOrExactlyExcludesEveryPublicShortcutContract(t *testing.T) {
+	tools := deliverySchemaAllToolsForHelpFlagTest(t, NewRootCommand())
 	public := make([]shortcut.Shortcut, 0, publicShortcutCount)
 	for _, candidate := range shortcut.All() {
 		if candidate.UserDefined || !shortcut.InPublicCatalog(candidate.Service, candidate.Command) {
@@ -40,10 +44,10 @@ func TestEmbeddedSchemaCoversOrExactlyExcludesEveryPublicShortcutContract(t *tes
 		}
 	}
 	if deliveredShortcuts != schemaPublishedShortcutCount {
-		t.Fatalf("embedded schema --all shortcut tools = %d, want %d", deliveredShortcuts, schemaPublishedShortcutCount)
+		t.Fatalf("delivery schema --all shortcut tools = %d, want %d", deliveredShortcuts, schemaPublishedShortcutCount)
 	}
 
-	exclusions, err := cli.EmbeddedRuntimeSchemaExclusions()
+	exclusions, err := cli.ReviewedRuntimeSchemaExclusions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,23 +68,23 @@ func TestEmbeddedSchemaCoversOrExactlyExcludesEveryPublicShortcutContract(t *tes
 			if tool == nil {
 				cliPath := declared.Service + " " + declared.Command
 				if !excludedPaths[cliPath] {
-					t.Fatalf("embedded schema --all is missing %s (%s) without an exact reviewed exclusion", canonical, cliPath)
+					t.Fatalf("delivery schema --all is missing %s (%s) without an exact reviewed exclusion", canonical, cliPath)
 				}
 				excludedShortcuts++
 				return
 			}
-			assertEmbeddedShortcutIdentityAndSelection(t, tool, declared, canonical)
-			assertEmbeddedShortcutSafetyAndInterface(t, tool, declared, canonical)
-			assertEmbeddedShortcutParameters(t, tool, declared, canonical)
-			assertEmbeddedShortcutConstraints(t, tool, declared, canonical)
+			assertDeliveryShortcutIdentityAndSelection(t, tool, declared, canonical)
+			assertDeliveryShortcutSafetyAndInterface(t, tool, declared, canonical)
+			assertDeliveryShortcutParameters(t, tool, declared, canonical)
+			assertDeliveryShortcutConstraints(t, tool, declared, canonical)
 		})
 	}
-	if got, want := excludedShortcuts, publicShortcutCount-schemaPublishedShortcutCount; got != want {
+	if got, want := excludedShortcuts, publicShortcutCount-publiclyDeliveredShortcutCount; got != want {
 		t.Fatalf("exactly excluded public shortcuts = %d, want %d", got, want)
 	}
 }
 
-func TestEmbeddedShortcutProgressiveQueriesReturnCompleteContracts(t *testing.T) {
+func TestDeliveryShortcutProgressiveQueriesReturnCompleteContracts(t *testing.T) {
 	leaf := executeShortcutSchemaQuery(t, "--cli-path", "chat +messages-read-status")
 	if got, want := schemaContractString(leaf["canonical_path"]), "chat.shortcut_messages_read_status"; got != want {
 		t.Fatalf("shortcut leaf canonical_path = %q, want %q", got, want)
@@ -89,11 +93,15 @@ func TestEmbeddedShortcutProgressiveQueriesReturnCompleteContracts(t *testing.T)
 		t.Fatalf("shortcut leaf confirmation = %q, want %q", got, want)
 	}
 	conversationID := schemaContractMap(leaf["parameters"])["conversation-id"]
-	if required, _ := conversationID["required"].(bool); !required {
-		t.Fatal("public --conversation-id must become required after hidden compatibility aliases are removed from Schema")
+	if required, _ := conversationID["required"].(bool); required {
+		t.Fatal("public --conversation-id must stay optional when hidden siblings still satisfy the declared exactly_one group")
 	}
-	if got := leaf["constraints"]; got != nil {
-		t.Fatalf("shortcut leaf constraints = %#v, want omitted after hidden compatibility aliases collapse", got)
+	wantMessagesConstraints := map[string]any{
+		"require_one_of":     [][]string{{"conversation-id", "group", "id"}},
+		"mutually_exclusive": [][]string{{"conversation-id", "group", "id"}},
+	}
+	if got := leaf["constraints"]; !schemaContractJSONEqual(got, wantMessagesConstraints) {
+		t.Fatalf("shortcut leaf constraints = %#v, want %#v", got, wantMessagesConstraints)
 	}
 
 	constrainedLeaf := executeShortcutSchemaQuery(t, "--cli-path", "calendar +freebusy")
@@ -106,7 +114,7 @@ func TestEmbeddedShortcutProgressiveQueriesReturnCompleteContracts(t *testing.T)
 
 	product := executeShortcutSchemaQuery(t, "chat")
 	productPayload, _ := product["product"].(map[string]any)
-	if got, want := int(product["count"].(float64)), 129; got != want {
+	if got, want := int(product["count"].(float64)), 187; got != want {
 		t.Fatalf("schema chat count = %d, want %d", got, want)
 	}
 	summaries := schemaContractObjectSlice(productPayload["tools"])
@@ -116,8 +124,77 @@ func TestEmbeddedShortcutProgressiveQueriesReturnCompleteContracts(t *testing.T)
 			shortcutCount++
 		}
 	}
-	if shortcutCount != 47 {
-		t.Fatalf("schema chat shortcut summaries = %d, want 47", shortcutCount)
+	if shortcutCount != 98 {
+		t.Fatalf("schema chat shortcut summaries = %d, want 98", shortcutCount)
+	}
+}
+
+func TestDeliveryDocUpdateShortcutPublishesCompleteConditionalContract(t *testing.T) {
+	leaf := executeShortcutSchemaQuery(t, "--cli-path", "doc +update")
+	if got, want := schemaContractString(leaf["confirmation"]), "user_required"; got != want {
+		t.Fatalf("confirmation = %q, want %q", got, want)
+	}
+	parameters := schemaContractMap(leaf["parameters"])
+	if got, want := len(parameters), 11; got != want {
+		t.Fatalf("parameter count = %d, want %d: %#v", got, want, parameters)
+	}
+	if required, _ := parameters["node"]["required"].(bool); !required {
+		t.Errorf("--node required = %#v, want true", parameters["node"]["required"])
+	}
+	if required, _ := parameters["command"]["required"].(bool); required {
+		t.Errorf("--command required = true, want runtime custom validation")
+	}
+	wantProperties := map[string]string{
+		"node": "node", "doc": "node", "command": "command", "content": "content", "text": "content", "doc-format": "docFormat",
+		"block-id": "blockId", "after-block-id": "afterBlockId", "old": "old", "new": "new",
+		"expected-revision": "expectedRevision",
+	}
+	for name, want := range wantProperties {
+		if got := schemaContractString(parameters[name]["property"]); got != want {
+			t.Errorf("--%s property = %q, want %q", name, got, want)
+		}
+	}
+	for _, name := range []string{"content", "block-id", "after-block-id", "old", "new"} {
+		parameter := parameters[name]
+		if required, _ := parameter["required"].(bool); required {
+			t.Errorf("--%s required = true, want runtime custom validation", name)
+		}
+		if got := schemaContractString(parameter["required_when"]); got != "" {
+			t.Errorf("--%s required_when = %q, want compatibility-safe custom validation", name, got)
+		}
+	}
+	if constraints, exists := leaf["constraints"]; exists && constraints != nil {
+		t.Fatalf("enum-discriminated requirements must not be mispublished as relationship constraints: %#v", constraints)
+	}
+}
+
+func TestDeliveryDocCommentExportImportContractsAreCanonical(t *testing.T) {
+	comment := executeShortcutSchemaQuery(t, "--cli-path", "doc +comment-create")
+	commentParameters := schemaContractMap(comment["parameters"])
+	for _, name := range []string{"node", "content", "selection", "block-id", "start", "end", "selected-text", "mention"} {
+		if _, ok := commentParameters[name]; !ok {
+			t.Errorf("comment-create missing --%s: %#v", name, commentParameters)
+		}
+	}
+	for name, want := range map[string]string{"node": "node", "mention": "mention"} {
+		if got := schemaContractString(commentParameters[name]["property"]); got != want {
+			t.Errorf("comment-create --%s property = %q, want %q", name, got, want)
+		}
+	}
+
+	export := executeShortcutSchemaQuery(t, "--cli-path", "doc +export")
+	exportFormat := schemaContractMap(export["parameters"])["export-format"]
+	if required, _ := exportFormat["required"].(bool); required {
+		t.Fatalf("export --export-format required = true, want compatibility default")
+	}
+	if defaultValue := schemaContractString(exportFormat["default"]); defaultValue != "docx" {
+		t.Fatalf("export --export-format default = %q, want docx", defaultValue)
+	}
+
+	importLeaf := executeShortcutSchemaQuery(t, "--cli-path", "doc +import")
+	constraints, _ := importLeaf["constraints"].(map[string]any)
+	if requireOneOf, ok := constraints["require_one_of"]; ok && !schemaContractJSONEqual(requireOneOf, [][]string{}) {
+		t.Fatalf("import unexpectedly requires a target: %#v", constraints)
 	}
 }
 
@@ -143,7 +220,7 @@ func shortcutSchemaCanonical(declared shortcut.Shortcut) string {
 	return declared.Service + ".shortcut_" + name
 }
 
-func assertEmbeddedShortcutIdentityAndSelection(
+func assertDeliveryShortcutIdentityAndSelection(
 	t testing.TB,
 	tool map[string]any,
 	declared shortcut.Shortcut,
@@ -179,24 +256,16 @@ func assertEmbeddedShortcutIdentityAndSelection(
 	}
 }
 
-func assertEmbeddedShortcutSafetyAndInterface(
+func assertDeliveryShortcutSafetyAndInterface(
 	t testing.TB,
 	tool map[string]any,
 	declared shortcut.Shortcut,
 	canonical string,
 ) {
 	t.Helper()
-	risk := declared.Risk
-	if risk == "" {
-		risk = shortcut.RiskRead
-	}
-	wantEffect, wantRisk, wantConfirmation, wantIdempotency := "read", "low", "not_required", "idempotent"
-	switch risk {
-	case shortcut.RiskWrite:
-		wantEffect, wantRisk, wantConfirmation, wantIdempotency = "write", "medium", "user_required", "unknown"
-	case shortcut.RiskHighWrite:
-		wantEffect, wantRisk, wantConfirmation, wantIdempotency = "destructive", "high", "user_required", "unknown"
-	}
+	safety := shortcut.EffectiveSafety(declared)
+	wantEffect, wantRisk := safety.Effect, safety.Risk
+	wantConfirmation, wantIdempotency := safety.Confirmation, safety.Idempotency
 	for field, want := range map[string]string{
 		"effect":         wantEffect,
 		"risk":           wantRisk,
@@ -214,7 +283,7 @@ func assertEmbeddedShortcutSafetyAndInterface(
 	}
 }
 
-func assertEmbeddedShortcutParameters(
+func assertDeliveryShortcutParameters(
 	t testing.TB,
 	tool map[string]any,
 	declared shortcut.Shortcut,
@@ -226,6 +295,15 @@ func assertEmbeddedShortcutParameters(
 	for _, flag := range declared.Flags {
 		if !flag.Hidden {
 			publicFlags = append(publicFlags, flag)
+			if flag.AliasesVisible {
+				for _, alias := range flag.Aliases {
+					aliasFlag := flag
+					aliasFlag.Name = alias
+					aliasFlag.Default = ""
+					aliasFlag.Aliases = nil
+					publicFlags = append(publicFlags, aliasFlag)
+				}
+			}
 		}
 	}
 	if got, want := len(parameters), len(publicFlags); got != want {
@@ -291,6 +369,13 @@ func shortcutSchemaRequired(declared shortcut.Shortcut, flagName string) bool {
 		if flag.Name == flagName && flag.Required {
 			return true
 		}
+		if flag.Required && flag.AliasesVisible {
+			for _, alias := range flag.Aliases {
+				if alias == flagName {
+					return true
+				}
+			}
+		}
 	}
 	public := make(map[string]bool, len(declared.Flags))
 	for _, flag := range declared.Flags {
@@ -308,14 +393,20 @@ func shortcutSchemaRequired(declared shortcut.Shortcut, flagName string) bool {
 				visible = append(visible, constrained)
 			}
 		}
-		if len(visible) == 1 && visible[0] == flagName {
+		// Match AnnotateConstraints: only collapse to required when the projected
+		// group has a single member (no remaining hidden siblings).
+		flags := visible
+		if len(visible) < len(constraint.Flags) {
+			flags = append([]string(nil), constraint.Flags...)
+		}
+		if len(flags) == 1 && flags[0] == flagName {
 			return true
 		}
 	}
 	return false
 }
 
-func assertEmbeddedShortcutConstraints(
+func assertDeliveryShortcutConstraints(
 	t testing.TB,
 	tool map[string]any,
 	declared shortcut.Shortcut,
@@ -330,11 +421,17 @@ func assertEmbeddedShortcutConstraints(
 	}
 	want := map[string][][]string{}
 	for _, constraint := range declared.Constraints {
-		flags := make([]string, 0, len(constraint.Flags))
+		visible := make([]string, 0, len(constraint.Flags))
 		for _, flagName := range constraint.Flags {
 			if public[flagName] {
-				flags = append(flags, flagName)
+				visible = append(visible, flagName)
 			}
+		}
+		// Match AnnotateConstraints declare≡execute projection: keep the full
+		// declared group when any hidden sibling remains.
+		flags := visible
+		if len(visible) < len(constraint.Flags) {
+			flags = append([]string(nil), constraint.Flags...)
 		}
 		switch constraint.Kind {
 		case shortcut.ConstraintAtLeastOne:

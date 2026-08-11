@@ -171,6 +171,30 @@ Flags:
 
 > 接口不支持游标分页，使用 `--limit` 一次性拉取。
 
+### 查询知识库动态
+```
+Usage:
+  dws wiki feed list [flags]
+Aliases:
+  list, ls
+Example:
+  dws wiki feed list --workspace <workspaceId> --format json
+  dws wiki feed list --workspace <workspaceId> --limit 10 --format json
+  dws wiki feed list --workspace <workspaceId> --exclude-file --format json
+  dws wiki feed list --workspace <workspaceId> --limit 10 --cursor <nextToken> --format json
+Flags:
+      --workspace string   知识库 ID 或 URL (必填)
+      --limit int          每页数量 (默认 20，最大 50)
+      --cursor string      分页游标 (首页留空)
+      --exclude-file       是否排除文件相关的动态 (默认 false)
+```
+
+查询指定知识库的动态，返回谁在什么时间进行了更新、上传、评论等操作。
+支持传入知识库 ID 或知识库 URL，系统自动识别。
+支持分页，通过 `--cursor` 传入上次返回的 nextToken 获取下一页；出参 `hasMore` 指示是否还有下一页。
+
+> **权限要求**：调用者需具备知识库的成员权限，非成员会被拒绝访问。
+
 ### 列出知识库节点
 ```
 Usage:
@@ -306,6 +330,8 @@ Flags:
 - 用户说"修改某人在知识库的权限/调整成员角色" → `member update`
 - 用户说"移除知识库成员/把某人从知识库移除/删除知识库成员" → `member remove`（需 `--workspace` + `--users`）
 - 用户说"知识库有哪些成员/查看知识库成员" → `member list`
+- 用户说"知识库动态/最近有什么更新/谁改了什么/知识库活动" → `feed list`（需 `--workspace`）
+- 用户说"知识库最近的评论/更新记录/操作日志" → `feed list`（需 `--workspace`）
 - 用户说"删除知识库/移除知识库/把知识库删了" → `space delete`（需 `--workspace`）
 
 > **跨产品路由说明**：知识库节点的**内容操作**（读取/编辑/块级操作）仍由 `dws doc` 承担：
@@ -392,6 +418,20 @@ dws wiki node move --workspace <workspaceId> --node <nodeId> --folder <targetFol
 # 删除节点（会要求确认）
 dws wiki node delete --workspace <workspaceId> --node <nodeId>
 
+# ── 工作流: 查询知识库动态 ──
+
+# 1. 获取知识库 ID
+dws wiki space list --format json
+
+# 2. 查询知识库动态
+dws wiki feed list --workspace <workspaceId> --format json
+
+# 3. 排除文件动态，只看文档操作
+dws wiki feed list --workspace <workspaceId> --exclude-file --format json
+
+# 4. 翻页（cursor 取上一页返回的 nextToken）
+dws wiki feed list --workspace <workspaceId> --cursor <nextToken> --format json
+
 # ── 工作流: 给知识库加成员 ──
 
 # 1. 先确认知识库 ID（避免授权到「我的文档」）
@@ -431,6 +471,7 @@ dws wiki space delete --workspace <workspaceId> --format json
 | `node list` | `nodeId` | node copy/move/delete 的 --node / `dws doc read` 的 --node |
 | `node search` | `nodeId` | node copy/move/delete 的 --node / `dws doc read` 的 --node |
 | `node create` | `nodeId` | node copy/move/delete 的 --node / `dws doc read` 的 --node |
+| `feed list` | `nextToken` | feed list 的 --cursor（翻页，`hasMore` 为 true 时继续）|
 | `member list` | `userId` | member update 的 --users / member remove 的 --users |
 
 ## 相关产品

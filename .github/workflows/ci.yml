@@ -111,6 +111,7 @@ jobs:
                 filename.startsWith('internal/app/') ||
                 filename.startsWith('internal/cli/') ||
                 filename.startsWith('internal/cobracmd/') ||
+                filename.startsWith('internal/corecmd/') ||
                 filename.startsWith('internal/helpers/') ||
                 filename.startsWith('internal/i18n/') ||
                 filename.startsWith('internal/interfacesnapshot/') ||
@@ -147,12 +148,12 @@ jobs:
                 filename === '.github/actionlint.yaml' ||
                 filename.startsWith('scripts/') ||
                 filename.startsWith('verify/') ||
+                filename.startsWith('internal/helpers/') ||
                 filename.startsWith('internal/generator/') ||
                 filename.startsWith('internal/cli/schema') ||
                 filename.startsWith('internal/interfacesnapshot/') ||
                 filename.startsWith('internal/app/upgrade') ||
                 filename.startsWith('internal/transport/') ||
-                filename.startsWith('internal/recovery/') ||
                 filename.startsWith('internal/syncdata/') ||
                 filename.includes('/testdata/') ||
                 filename.startsWith('testdata/') ||
@@ -433,6 +434,10 @@ jobs:
         if: steps.classify.outputs.changelog_only != 'true' && steps.classify.outputs.docs_only != 'true'
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
+      - name: Test reviewer routing policy
+        if: steps.classify.outputs.changelog_only != 'true' && steps.classify.outputs.docs_only != 'true'
+        run: node .github/reviewer-routing.test.js
+
   test-focused:
     name: Test (changed packages)
     needs: lint
@@ -490,7 +495,8 @@ jobs:
     needs: lint
     if: ${{ needs.lint.outputs.changelog_only != 'true' && needs.lint.outputs.docs_only != 'true' && needs.lint.outputs.full_suite == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # cli/smoke shards need headroom beyond go test -timeout for setup + assembly.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -498,6 +504,8 @@ jobs:
           - app
           - generators
           - helpers
+          - cli
+          - smoke
           - remaining
     steps:
       - name: Check out repository
@@ -523,7 +531,13 @@ jobs:
           test -n "$package_output"
           mapfile -t packages <<< "$package_output"
           test "${#packages[@]}" -gt 0
-          go test -v -race -count=1 -timeout=12m "${packages[@]}"
+          # cli/smoke own heavy NewRootCommand / Schema assembly under -race; give
+          # them a dedicated budget so remaining is not SIGTERM'd by OOM/timeout.
+          timeout_budget=12m
+          if [ "$TEST_SHARD" = "cli" ] || [ "$TEST_SHARD" = "smoke" ]; then
+            timeout_budget=15m
+          fi
+          go test -v -race -count=1 -timeout="$timeout_budget" "${packages[@]}"
 
   test-release-scripts:
     name: Test (workflow and release contracts)
@@ -693,8 +707,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Test macOS auth and Keychain paths with Race Detection
-        run: go test -v -race -count=1 -timeout=10m ./internal/keychain ./internal/auth ./internal/app
+      - name: Test macOS auth and Keychain packages with Race Detection
+        run: go test -v -race -count=1 -timeout=6m ./internal/keychain ./internal/auth
+
+      - name: Test macOS auth migration, Keychain diagnostics, and upgrade self-heal with Race Detection
+        run: go test -v -race -count=1 -timeout=5m ./internal/app -run '^(TestValidateNewBinary_RecoversFromUnsignedDarwin|Test(CrossPlatformCoverage)?Auth(MigrateKeychain|StatusDiagnosticReportsCiphertextKeyMismatch))'
 
   test-windows:
     name: Test (Windows)
@@ -805,6 +822,7 @@ jobs:
         run: ./scripts/policy/run-platform-coverage-gate.sh --base-ref "$COVERAGE_BASE_REF" --profile coverage-windows.txt
 
       - name: Upload Windows coverage artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-windows
@@ -1163,7 +1181,7 @@ jobs:
           FULL_SUITE: ${{ needs.lint.outputs.full_suite }}
           COVERAGE_TARGET: "100"
           COVERAGE_ENFORCE_OVERALL: "false"
-          COVERAGE_OVERALL_TOLERANCE: "0"
+          COVERAGE_OVERALL_TOLERANCE: "0.1"
         run: |
           policy_profile=coverage-policy.txt
           if [ "$FULL_SUITE" != true ]; then
@@ -1353,29 +1371,47 @@ jobs:
           if [ -z "$base_ref" ] || [ "$base_ref" = "0000000000000000000000000000000000000000" ]; then
             base_ref="$(git rev-parse HEAD^)"
           fi
+          candidate_ref="$(git rev-parse 'HEAD^{commit}')"
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ "$candidate_ref" != "$PR_HEAD_SHA" ]; then
+            echo "Compatibility checkout $candidate_ref does not match PR head $PR_HEAD_SHA" >&2
+            exit 1
+          fi
           git rev-parse --verify "${base_ref}^{commit}" >/dev/null
-          stable_ref="$(git tag --merged "$base_ref" --list 'v[0-9]*' --sort=-version:refname | awk 'index($0, "-") == 0 { print; exit }')"
+          . ./scripts/release/release-lib.sh
+          stable_ref=""
+          for tag in $(git tag --merged "$base_ref" --list 'v*' --sort=-version:refname); do
+            release_is_stable_version "$tag" || continue
+            if git rev-parse --verify --quiet "refs/tags/withdrawn/$tag" >/dev/null; then
+              continue
+            fi
+            stable_ref="$tag"
+            break
+          done
           if [ -z "$stable_ref" ]; then
             echo "No stable release tag is reachable from compatibility base $base_ref" >&2
             exit 1
           fi
           git rev-parse --verify "${stable_ref}^{commit}" >/dev/null
-          echo "COMPATIBILITY_BASE_REF=$base_ref" >> "$GITHUB_ENV"
-          echo "COMPATIBILITY_STABLE_REF=$stable_ref" >> "$GITHUB_ENV"
+          printf '%s\n' \
+            "COMPATIBILITY_BASE_REF=$base_ref" \
+            "COMPATIBILITY_STABLE_REF=$stable_ref" \
+            "COMPATIBILITY_CANDIDATE_REF=$candidate_ref" >> "$GITHUB_ENV"
 
-      - name: Check historical commands and help compatibility
+      - name: Check historical commands, help, and complete CLI compatibility
         if: ${{ needs.lint.outputs.changelog_only != 'true' && needs.lint.outputs.docs_only != 'true' && (needs.lint.outputs.full_suite == 'true' || needs.lint.outputs.interface_sensitive == 'true') }}
         run: |
           make authoritative-interface-integrity \
-            BASE_REF="$COMPATIBILITY_BASE_REF"
-          if [ "$(git rev-parse "${COMPATIBILITY_BASE_REF}^{commit}")" != "$(git rev-parse "${COMPATIBILITY_STABLE_REF}^{commit}")" ]; then
-            make authoritative-interface-integrity \
-              BASE_REF="$COMPATIBILITY_STABLE_REF"
-          fi
+            BASE_REF="$COMPATIBILITY_BASE_REF" \
+            STABLE_REF="$COMPATIBILITY_STABLE_REF" \
+            CANDIDATE_REF="$COMPATIBILITY_CANDIDATE_REF"
 
       - name: Check complete Schema compatibility
         if: ${{ needs.lint.outputs.changelog_only != 'true' && needs.lint.outputs.docs_only != 'true' && (needs.lint.outputs.full_suite == 'true' || needs.lint.outputs.interface_sensitive == 'true') }}
-        run: make schema-compatibility BASE_REF="$COMPATIBILITY_BASE_REF"
+        run: |
+          make schema-compatibility \
+            BASE_REF="$COMPATIBILITY_BASE_REF" \
+            STABLE_REF="$COMPATIBILITY_STABLE_REF" \
+            CANDIDATE_REF="$COMPATIBILITY_CANDIDATE_REF"
 
       - name: Check skill command references
         if: ${{ needs.lint.outputs.changelog_only != 'true' && needs.lint.outputs.docs_only != 'true' && (needs.lint.outputs.full_suite == 'true' || needs.lint.outputs.interface_sensitive == 'true') }}

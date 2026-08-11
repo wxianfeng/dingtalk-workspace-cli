@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/testseam"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
 )
 
@@ -133,8 +134,7 @@ func TestCrossPlatformCoverageDocVersionsCoverage(t *testing.T) {
 func jsonNumber(value string) json.Number { return json.Number(value) }
 
 func TestCrossPlatformCoverageRunDocReadJsonMLCoverage(t *testing.T) {
-	previous := deps
-	t.Cleanup(func() { deps = previous })
+	testseam.Protect(t, &deps)
 	caller := &helpersCoreCaller{format: "json"}
 	InitDeps(caller)
 	deps.Out.w = io.Discard

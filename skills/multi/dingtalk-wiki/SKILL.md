@@ -1,6 +1,6 @@
 ---
 name: dingtalk-wiki
-description: 钉钉知识库与空间管理。Use when 用户说 知识库/wiki/创建知识库/搜索知识库空间/我的文档/团队空间/空间成员/空间内节点创建/列出/搜索/复制/移动/删除。知识库节点复制移动走本 skill，普通钉盘文件复制移动走 dingtalk-drive；空间内单文档内容读写先用本 skill 定位再切到 dingtalk-doc。命令前缀：dws wiki。
+description: 钉钉知识库与空间管理。Use when 用户说 知识库/wiki/创建知识库/搜索知识库空间/我的文档/团队空间/空间成员/空间内节点创建/列出/搜索/复制/移动/删除/知识库动态。知识库节点复制移动走本 skill，普通钉盘文件复制移动走 dingtalk-drive；空间内单文档内容读写先用本 skill 定位再切到 dingtalk-doc。命令前缀：dws wiki。
 metadata:
   cli_version: ">=0.2.14"
   category: product
@@ -13,14 +13,14 @@ metadata:
 
 ## 前置条件 — 执行操作前必读
 
-> **CRITICAL — 执行任何 `dws` 操作前，MUST 先用 Read 工具完整读取 [`dws-shared`](../dws-shared/SKILL.md)。**该轻量文件包含全局执行契约、安全底线及 shared references 的按需加载导航；不要预加载其全部 references。
+> **CRITICAL — 执行任何 `dws` 操作前，MUST 先用 Read 工具完整读取 [`dingtalk-shared`](../dingtalk-shared/SKILL.md)。**该轻量文件包含全局执行契约、安全底线及 shared references 的按需加载导航；不要预加载其全部 references。
 
 > 命令参考：[wiki.md](references/wiki.md)。
 
 <!-- VISIBLE_SHORTCUTS_START -->
 ## Shortcuts（无专用脚本/recipe 时优先）
 
-以下 shortcut 同时进入公开 catalog 与 Runtime Schema。先按本 skill 的意图表、脚本和 recipe 路由：存在精确覆盖该场景的专用脚本/recipe 时按其执行；否则用户意图命中时，shortcut 优先于手写原子命令。命令已选中时直接执行；只在参数或安全语义不确定时读取 leaf Schema（例如 `dws schema --cli-path "wiki +<shortcut>" --format json`），在当前 Cobra flags 不确定时读取 `dws wiki <shortcut> --help`。仅当现有路由和 reference 都无法定位低频能力时，才用 `dws shortcut list --service wiki --format json` 批量发现。
+以下 shortcut 同时进入公开 catalog 与 Runtime Schema。先按本 skill 的意图表、脚本和 recipe 路由：存在精确覆盖该场景的专用脚本/recipe 时按其执行；否则用户意图命中时，shortcut 优先于手写原子命令。命令已选中时直接执行；只在参数或安全语义不确定时读取 Agent leaf Schema（例如 `dws schema --cli-path "wiki +<shortcut>" --compact --format json`），在当前 Cobra flags 不确定时读取 `dws wiki <shortcut> --help`。只有参数映射、接口绑定或 provenance 审计才省略 `--compact`。仅当现有路由和 reference 都无法定位低频能力时，才用 `dws shortcut list --service wiki --format json` 批量发现。
 
 | Shortcut | 风险 | 适用场景 |
 |---|---|---|
@@ -39,6 +39,7 @@ metadata:
 | "列出知识库里的文件/节点" | `dws wiki node list --workspace <WS_ID>` |
 | "在知识库里搜" | `dws wiki node search --workspace <WS_ID> --query "<关键词>"` |
 | "在知识库里创建文档节点" | `dws wiki node create --workspace <WS_ID> --type adoc --name "<名称>"` |
+| "知识库动态 / 最近有什么更新 / 谁改了什么" | `dws wiki feed list --workspace <WS_ID>` |
 
 ## 标准 SOP（必遵流程）
 

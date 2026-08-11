@@ -178,7 +178,7 @@ func newDocDepthRoute() driveDepthRoute {
 }
 
 // SIGINT 检查两点（出队后发首页前 + 翻页循环发每页前），入队是纯内存操作不检查。
-func runDriveListDepth(cmd *cobra.Command, route driveDepthRoute, baseArgs map[string]any, rootFolderID string, maxDepth int, pattern string, quiet bool) error {
+func runDriveListDepth(cmd *cobra.Command, route driveDepthRoute, baseArgs map[string]any, rootFolderID string, maxDepth int, pattern string, quiet bool, latest int) error {
 	if deps.Caller.DryRun() {
 		return printDriveDepthDryRun(route, baseArgs, maxDepth)
 	}
@@ -209,7 +209,7 @@ func runDriveListDepth(cmd *cobra.Command, route driveDepthRoute, baseArgs map[s
 bfs:
 	for len(queue) > 0 {
 		if ctx.Err() != nil {
-			return emitDriveDepthCancelled(collected, errs, pattern)
+			return emitDriveDepthCancelled(collected, errs, pattern, latest, maxDepth)
 		}
 		folder := queue[0]
 		queue = queue[1:]
@@ -220,7 +220,7 @@ bfs:
 		pages := 0
 		for {
 			if ctx.Err() != nil {
-				return emitDriveDepthCancelled(collected, errs, pattern)
+				return emitDriveDepthCancelled(collected, errs, pattern, latest, maxDepth)
 			}
 			pages++
 			if pages > maxPagesPerFolder {
@@ -233,7 +233,7 @@ bfs:
 			args := route.buildArgs(baseArgs, folder.id, pageToken)
 			text, err := route.fetchPage(ctx, args)
 			if ctx.Err() != nil {
-				return emitDriveDepthCancelled(collected, errs, pattern)
+				return emitDriveDepthCancelled(collected, errs, pattern, latest, maxDepth)
 			}
 			if err != nil {
 				folderErr = err
@@ -249,6 +249,12 @@ bfs:
 				item["depth"] = folder.depth + 1
 				item["parentId"] = folder.id // 根级为空串
 				item["rel_path"] = rel       // 不保证唯一，组树以 parentId 为准
+				// 时间戳归一：钉盘 modifyTime / 知识库 updateTime 统一为 sortTime（毫秒 int64）
+				if ms, ok := driveItemModifiedMillis(item); ok {
+					item["sortTime"] = ms
+				} else {
+					item["sortTime"] = int64(0)
+				}
 				collected = append(collected, item)
 				if len(collected) >= driveDepthMaxItems {
 					// 未访问目录不记 errors[]（没失败只是没扫），避免 errors 数组被淹没
@@ -291,7 +297,7 @@ bfs:
 			if driveDepthUnrecoverable(folderErr) {
 				// partial 照吐 stdout，错误详情走 stderr，非零退出
 				errs = append(errs, newDriveDepthError(folder, folderErr))
-				if emitErr := emitDriveDepthResult(collected, errs, truncated, pattern); emitErr != nil {
+				if emitErr := emitDriveDepthResult(collected, errs, truncated, pattern, latest, maxDepth); emitErr != nil {
 					return emitErr
 				}
 				return folderErr
@@ -324,18 +330,26 @@ bfs:
 		}
 	}
 
-	return emitDriveDepthResult(collected, errs, truncated, pattern)
+	if truncated && latest > 0 {
+		return &CLIError{
+			Code:       CodeContentTruncated,
+			Message:    fmt.Sprintf("LATEST_SCAN_TRUNCATED: 扫描在全局上限 %d 条处截断，未扫描区域可能含更新文件，拒绝输出不完整的 Top-%d", driveDepthMaxItems, latest),
+			Suggestion: fmt.Sprintf("缩小扫描范围后重试：--folder 指定子目录，或降低 --depth 层数，如 dws drive list --folder <子目录ID> --latest %d", latest),
+		}
+	}
+
+	return emitDriveDepthResult(collected, errs, truncated, pattern, latest, maxDepth)
 }
 
-func emitDriveDepthCancelled(items []map[string]any, errs []driveDepthError, pattern string) error {
-	if err := emitDriveDepthResult(items, errs, true, pattern); err != nil {
+func emitDriveDepthCancelled(items []map[string]any, errs []driveDepthError, pattern string, latest, reqDepth int) error {
+	if err := emitDriveDepthResult(items, errs, true, pattern, latest, reqDepth); err != nil {
 		return err
 	}
 	return &driveDepthCancelledError{}
 }
 
 // depth>1 不输出 nextToken。
-func emitDriveDepthResult(items []map[string]any, errs []driveDepthError, truncated bool, pattern string) error {
+func emitDriveDepthResult(items []map[string]any, errs []driveDepthError, truncated bool, pattern string, latest, reqDepth int) error {
 	if pattern != "" {
 		// 先递归后过滤，过滤仅作用于输出项，不阻止文件夹下钻
 		filtered := make([]map[string]any, 0, len(items))
@@ -350,20 +364,27 @@ func emitDriveDepthResult(items []map[string]any, errs []driveDepthError, trunca
 		}
 		items = filtered
 	}
-	// 排列为 rel_path 树序：BFS 只决定截断时哪些条目入选，树序决定呈现顺序。
-	sort.SliceStable(items, func(i, j int) bool {
-		ri, _ := items[i]["rel_path"].(string)
-		rj, _ := items[j]["rel_path"].(string)
-		if ri != rj {
-			return ri < rj
-		}
-		return driveDepthItemID(items[i]) < driveDepthItemID(items[j])
-	})
+	if latest > 0 {
+		items = applyDriveListLatest(items, latest)
+	} else {
+		// 排列为 rel_path 树序：BFS 只决定截断时哪些条目入选，树序决定呈现顺序。
+		sort.SliceStable(items, func(i, j int) bool {
+			ri, _ := items[i]["rel_path"].(string)
+			rj, _ := items[j]["rel_path"].(string)
+			if ri != rj {
+				return ri < rj
+			}
+			return driveDepthItemID(items[i]) < driveDepthItemID(items[j])
+		})
+	}
 	maxDepth := 0
 	for _, item := range items {
 		if d, ok := item["depth"].(int); ok && d > maxDepth {
 			maxDepth = d
 		}
+	}
+	if latest > 0 && reqDepth == 1 {
+		stripDriveDepthDecorations(items)
 	}
 	if items == nil {
 		items = []map[string]any{}

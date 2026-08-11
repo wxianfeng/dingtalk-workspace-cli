@@ -170,13 +170,22 @@ Usage:
 Example:
   dws drive download --node <dentryUuid> --output ./report.pdf
   dws drive download --node <dentryUuid> --output ~/downloads/
+  dws drive download --node <dentryUuid> --output ./big.zip --part-size 32MB --parallel 8
 Flags:
       --node string    文件 ID (dentryUuid) (必填)
       --output string     本地保存路径 (文件路径或目录，不传则保存到当前目录)；如果指定目录，文件名从下载 URL 中自动推断 (可选)
       --space-id string   文件所属空间 ID (可选)
+      --part-size string  分片下载的分片大小，支持 KB/MB/GB 单位，范围 1MB-1GB (默认 16MB)
+      --parallel int      分片下载并发数，范围 1-8 (默认 4)
+      --no-resume         关闭断点续传，忽略历史下载进度从头下载 (默认开启续传)
 ```
 
 > **提示**：`--output` 为可选参数，不传则保存到当前目录，文件名从下载 URL 中自动推断。
+
+> **大文件分片下载**：
+> - 大文件自动分片并发下载，小文件整流下载，行为对用户透明，无需任何额外操作。
+> - 断点续传默认开启：下载中断后重跑同一命令会自动跳过已完成部分继续下载（`<目标文件>.dwspart` 为临时进度文件，下载完成后自动清理）；不需要续传时加 `--no-resume`。
+> - 下载凭证过期会自动刷新并继续下载，已完成的部分不会重下；单个分片失败会自动重试，无需手动处理。
 
 ### 创建文件夹
 
@@ -366,7 +375,7 @@ Flags:
 
 **.md 文件的内容操作路由**: 当 `drive info` 返回 `extension=md` 时，文件管理操作（移动/重命名/删除/下载文件）留在 `drive`，但**读取或改写原文内容必须切换到 `markdown` 产品**：
 - 用户说"读取/看一下 markdown 内容/获取 .md 原文" → `dws markdown fetch --node <ID>`（非 `drive download`）
-- 详见 `dingtalk-markdown` 的 [markdown.md](../../dingtalk-markdown/references/markdown.md)
+- 详见 `dingtalk-misc` 的 [markdown.md](../../dingtalk-misc/references/markdown.md)
 
 ## 核心工作流
 
@@ -526,6 +535,7 @@ Flags:
 
 > **两步下载流程**：先调用 MCP 工具获取历史版本下载 URL 和签名头，再 HTTP GET 下载文件内容到本地。
 > `--output` 指定目录时，优先从文件信息中获取原始文件名，获取不到时从下载 URL 推断。
+> 历史版本下载同样支持 `--part-size` / `--parallel` / `--no-resume` 分片下载参数，行为与最新版下载一致。
 
 #### 回滚文件到指定历史版本
 

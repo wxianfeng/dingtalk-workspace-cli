@@ -1,7 +1,7 @@
 # 通讯录（组织架构）
 
 > **SKILL.md** 中 #8 内联 3 条 **lite**：`get-contact-self`、`search-person`、`search-user`。下列 recipe、专用规则与消歧请在命中 #8 且**超出**上述 lite 时阅读本文。
-> 产品命令见 [contact.md](./contact.md)。通用批量/并行见 [_common/conventions.md](_common/conventions.md)。
+> 产品命令见 [contact.md](./contact.md)。通用批量/并行见 [recipes/conventions.md](recipes/conventions.md)。
 
 ## 专用规则（#8 非 lite 步骤必守）
 
@@ -15,7 +15,7 @@
   3. 将「姓名 + 部门 + 职位」列表展示给用户，请用户确认选择哪一位
   4. 使用用户确认的 `userId` 继续后续操作
   > **根因**：`aisearch person` 不返回完整部门信息，无法仅凭搜索结果区分同名用户。**必须**追加 `contact user get` 获取部门信息才能消歧。
-- **批量**：多个 `userId` 用 `contact user get --ids id1,id2,...`；多部门成员列表按需并行，遵守单次批量上限与 [_common/conventions.md](_common/conventions.md)。
+- **批量**：多个 `userId` 用 `contact user get --ids id1,id2,...`；多部门成员列表按需并行，遵守单次批量上限与 [recipes/conventions.md](recipes/conventions.md)。
 - **子部门枚举**：已知父部门 `deptId` 时**优先** `contact dept list-children --dept <父deptId>` 直接拿到完整子部门列表；只知道部门名时先 `contact dept search --query "<父部门名>"` 取 `deptId` 再 `list-children`；用户明示的子部门名（无需枚举）可直接 `dept search` 命中。多子部门展开见 `explore-subdepts-and-members`。
 
 ## 与其他场景消歧

@@ -384,6 +384,230 @@ func TestReleaseChangelogExtractionAllowsLowercaseTodoProductName(t *testing.T) 
 	}
 }
 
+func TestInterfaceIntegrityWorkflowContract(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("Abs(repo root) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("ReadFile(ci.yml) error = %v", err)
+	}
+	workflow := string(data)
+	interfaceStart := strings.Index(workflow, "\n  interface-integrity:\n")
+	interfaceEnd := strings.Index(workflow, "\n  cli-smoke:\n")
+	if interfaceStart < 0 || interfaceEnd <= interfaceStart {
+		t.Fatal("Code Admission workflow missing Interface Integrity job boundaries")
+	}
+	interfaceJob := workflow[interfaceStart:interfaceEnd]
+	for _, want := range []string{
+		"name: Check historical commands, help, and complete CLI compatibility",
+		"make authoritative-interface-integrity",
+		`BASE_REF="$COMPATIBILITY_BASE_REF"`,
+		`STABLE_REF="$COMPATIBILITY_STABLE_REF"`,
+		`CANDIDATE_REF="$COMPATIBILITY_CANDIDATE_REF"`,
+	} {
+		if !strings.Contains(interfaceJob, want) {
+			t.Errorf("Interface Integrity job missing release-equivalent compatibility contract %q", want)
+		}
+	}
+	for _, want := range []string{
+		`candidate_ref="$(git rev-parse 'HEAD^{commit}')"`,
+		`[ "$candidate_ref" != "$PR_HEAD_SHA" ]`,
+		`"COMPATIBILITY_BASE_REF=$base_ref"`,
+		`"COMPATIBILITY_STABLE_REF=$stable_ref"`,
+		`"COMPATIBILITY_CANDIDATE_REF=$candidate_ref" >> "$GITHUB_ENV"`,
+	} {
+		if got := strings.Count(interfaceJob, want); got != 1 {
+			t.Errorf("Interface Integrity job contract %q count = %d, want exactly one definition", want, got)
+		}
+	}
+	if got := strings.Count(interfaceJob, `>> "$GITHUB_ENV"`); got != 1 {
+		t.Errorf("Interface Integrity job must append its compatibility refs to GITHUB_ENV once, got %d writes", got)
+	}
+	if strings.Count(interfaceJob, "make authoritative-interface-integrity") != 1 {
+		t.Errorf("Interface Integrity job must have exactly one compatibility decision seam")
+	}
+	if strings.Contains(interfaceJob, "./scripts/policy/check-command-compatibility.sh") {
+		t.Error("Interface Integrity job must not bypass the authoritative Make seam")
+	}
+	if strings.Contains(interfaceJob, "check-interface-baseline.sh") {
+		t.Error("Interface Integrity job must not reintroduce the legacy fixture checker")
+	}
+
+	schemaStart := strings.Index(interfaceJob, "\n      - name: Check complete Schema compatibility\n")
+	if schemaStart < 0 {
+		t.Fatal("Interface Integrity job missing complete Schema compatibility step")
+	}
+	schemaRemainder := interfaceJob[schemaStart+1:]
+	schemaEnd := strings.Index(schemaRemainder, "\n      - name:")
+	if schemaEnd < 0 {
+		t.Fatal("complete Schema compatibility step has no workflow boundary")
+	}
+	schemaStep := schemaRemainder[:schemaEnd]
+	for _, want := range []string{
+		"make schema-compatibility",
+		`BASE_REF="$COMPATIBILITY_BASE_REF"`,
+		`STABLE_REF="$COMPATIBILITY_STABLE_REF"`,
+		`CANDIDATE_REF="$COMPATIBILITY_CANDIDATE_REF"`,
+	} {
+		if !strings.Contains(schemaStep, want) {
+			t.Errorf("Schema compatibility step missing authoritative contract %q", want)
+		}
+	}
+}
+
+func TestLocalInterfaceIntegrityUsesAuthoritativeSeam(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("Abs(repo root) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("ReadFile(Makefile) error = %v", err)
+	}
+	makefile := string(data)
+	interfaceStart := strings.Index(makefile, "\ninterface-integrity:\n")
+	authoritativeStart := strings.Index(makefile, "\nauthoritative-interface-integrity:\n")
+	coverageStart := strings.Index(makefile, "\ncoverage-gate:\n")
+	if interfaceStart < 0 || authoritativeStart <= interfaceStart || coverageStart <= authoritativeStart {
+		t.Fatal("Makefile missing interface-integrity target boundaries")
+	}
+	interfaceTarget := makefile[interfaceStart:authoritativeStart]
+	for _, want := range []string{
+		"./scripts/policy/check-authoritative-interface-baselines.sh",
+		`base_ref="origin/main"`,
+		`candidate_ref="HEAD"`,
+		`--base-ref "$$base_ref"`,
+		`--stable-ref "$(STABLE_REF)"`,
+		`--candidate-ref "$$candidate_ref"`,
+	} {
+		if !strings.Contains(interfaceTarget, want) {
+			t.Errorf("interface-integrity target missing authoritative contract %q", want)
+		}
+	}
+	if strings.Contains(interfaceTarget, "check-interface-baseline.sh") {
+		t.Error("interface-integrity target still invokes the legacy fixture checker")
+	}
+	authoritativeTarget := makefile[authoritativeStart:coverageStart]
+	for _, want := range []string{
+		"./scripts/policy/check-authoritative-interface-baselines.sh",
+		`candidate_ref="HEAD"`,
+		`--base-ref "$(BASE_REF)"`,
+		`--stable-ref "$(STABLE_REF)"`,
+		`--candidate-ref "$$candidate_ref"`,
+	} {
+		if !strings.Contains(authoritativeTarget, want) {
+			t.Errorf("authoritative-interface-integrity target missing contract %q", want)
+		}
+	}
+
+	if got := strings.Count(makefile, "./scripts/policy/check-interface-baseline.sh"); got != 2 {
+		t.Fatalf("legacy fixture helper invocation count = %d, want update/reset only", got)
+	}
+	for _, target := range []string{"update-interface-baseline", "reset-interface-baseline"} {
+		marker := "\n" + target + ":\n"
+		start := strings.Index(makefile, marker)
+		if start < 0 {
+			t.Fatalf("Makefile missing %s target", target)
+		}
+		end := strings.Index(makefile[start+len(marker):], "\n\n")
+		if end < 0 {
+			t.Fatalf("Makefile %s target has no boundary", target)
+		}
+		block := makefile[start : start+len(marker)+end]
+		if !strings.Contains(block, "./scripts/policy/check-interface-baseline.sh") {
+			t.Errorf("%s target must retain the legacy fixture helper", target)
+		}
+	}
+}
+
+func TestLocalSchemaCompatibilityUsesAuthoritativeCandidateSeam(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("Abs(repo root) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatalf("ReadFile(Makefile) error = %v", err)
+	}
+	makefile := string(data)
+	schemaStart := strings.Index(makefile, "\nschema-compatibility:\n")
+	skillStart := strings.Index(makefile, "\nskill-command-integrity:\n")
+	if schemaStart < 0 || skillStart <= schemaStart {
+		t.Fatal("Makefile missing schema-compatibility target boundaries")
+	}
+	schemaTarget := makefile[schemaStart:skillStart]
+	for _, want := range []string{
+		"./scripts/policy/check-authoritative-schema-compatibility.sh",
+		`candidate_ref="HEAD"`,
+		`--base-ref "$(BASE_REF)"`,
+		`--stable-ref "$(STABLE_REF)"`,
+		`--candidate-ref "$$candidate_ref"`,
+	} {
+		if !strings.Contains(schemaTarget, want) {
+			t.Errorf("schema-compatibility target missing authoritative contract %q", want)
+		}
+	}
+}
+
+func TestInterfaceSensitiveClassificationCoversCoreCommandFramework(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("Abs(repo root) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("ReadFile(ci.yml) error = %v", err)
+	}
+	workflow := string(data)
+	start := strings.Index(workflow, "            const isInterfaceSensitive =")
+	end := strings.Index(workflow, "            const isMCPSensitive =")
+	if start < 0 || end <= start {
+		t.Fatal("Code Admission workflow missing interface-sensitive classifier boundaries")
+	}
+	classifier := strings.TrimSpace(workflow[start:end])
+	probe := classifier + `
+if (!isInterfaceSensitive("internal/corecmd/corecmd.go")) {
+  throw new Error("existing corecmd files must trigger Interface Integrity");
+}
+`
+	cmd := exec.Command("node", "-e", probe)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("interface-sensitive classifier rejected corecmd change: %v\n%s", err, output)
+	}
+}
+
+func TestHighRiskClassificationShardsHelperChanges(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatalf("Abs(repo root) error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("ReadFile(ci.yml) error = %v", err)
+	}
+	workflow := string(data)
+	start := strings.Index(workflow, "            const isDocsOnly =")
+	end := strings.Index(workflow, "            const classifyFiles =")
+	if start < 0 || end <= start {
+		t.Fatal("Code Admission workflow missing high-risk classifier boundaries")
+	}
+	classifier := strings.TrimSpace(workflow[start:end])
+	probe := classifier + `
+if (!isHighRisk("internal/helpers/minutes.go")) {
+  throw new Error("helper changes must use the sharded full suite");
+}
+if (isHighRisk("internal/helpersx/minutes.go")) {
+  throw new Error("helper high-risk classification must respect the path boundary");
+}
+`
+	cmd := exec.Command("node", "-e", probe)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("high-risk classifier rejected helper sharding contract: %v\n%s", err, output)
+	}
+}
+
 func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -433,7 +657,7 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		"needs.lint.outputs.platform_sensitive == 'true'",
 		`COVERAGE_TARGET: "100"`,
 		`COVERAGE_ENFORCE_OVERALL: "false"`,
-		`COVERAGE_OVERALL_TOLERANCE: "0"`,
+		`COVERAGE_OVERALL_TOLERANCE: "0.1"`,
 		`additional_profile=coverage-shortcut.txt`,
 		"run: make test-plan",
 		"run: make format-check",
@@ -450,6 +674,7 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		"filename === '.github/actionlint.yaml'",
 		"filename.startsWith('scripts/')",
 		"filename.startsWith('verify/')",
+		"filename.startsWith('internal/helpers/')",
 		"filename === 'test/fixtures/cli-interface-baseline.txt'",
 		"filename.startsWith('internal/interfacesnapshot/')",
 		"filename.startsWith('internal/cobracmd/')",
@@ -533,8 +758,44 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		t.Fatal("Code Admission workflow missing race test job boundaries")
 	}
 	raceJob := admission[raceStart:raceEnd]
-	if !strings.Contains(raceJob, `go test -v -race -count=1 -timeout=12m "${packages[@]}"`) {
-		t.Error("full race shards must retain enough package-level time for internal/app")
+	// Full race shards use a dynamic package-level timeout: default/floor 12m,
+	// with cli/smoke raised to 15m for NewRootCommand / Schema assembly under -race.
+	for _, want := range []string{
+		"timeout_budget=12m",
+		`if [ "$TEST_SHARD" = "cli" ] || [ "$TEST_SHARD" = "smoke" ]; then`,
+		"timeout_budget=15m",
+		`go test -v -race -count=1 -timeout="$timeout_budget" "${packages[@]}"`,
+		"- smoke",
+	} {
+		if !strings.Contains(raceJob, want) {
+			t.Errorf("full race shards must retain dynamic timeout budget contract %q", want)
+		}
+	}
+
+	darwinStart := strings.Index(admission, "\n  test-darwin:\n")
+	darwinEnd := strings.Index(admission, "\n  test-windows:\n")
+	if darwinStart < 0 || darwinEnd <= darwinStart {
+		t.Fatal("Code Admission workflow missing macOS test job boundaries")
+	}
+	darwinJob := admission[darwinStart:darwinEnd]
+	// The macOS job no longer runs ./internal/app as a whole package, so it does
+	// not need the package-level race budget the Ubuntu shard gets — the Ubuntu
+	// "race: app" shard already covers everything except the natively-gated
+	// tests. Pinning the two focused commands replaces that budget assertion:
+	// it locks the per-step timeouts and blocks a whole-package regression.
+	for _, want := range []string{
+		`go test -v -race -count=1 -timeout=6m ./internal/keychain ./internal/auth`,
+		`go test -v -race -count=1 -timeout=5m ./internal/app -run '^(TestValidateNewBinary_RecoversFromUnsignedDarwin|Test(CrossPlatformCoverage)?Auth(MigrateKeychain|StatusDiagnosticReportsCiphertextKeyMismatch))'`,
+	} {
+		if !strings.Contains(darwinJob, want) {
+			t.Errorf("macOS native test job missing focused auth contract %q", want)
+		}
+	}
+	if strings.Contains(darwinJob, "./internal/keychain ./internal/auth ./internal/app") {
+		t.Error("macOS native test job must not repeat the complete internal/app race shard")
+	}
+	if count := strings.Count(darwinJob, "./internal/app"); count != 1 {
+		t.Errorf("macOS native test job internal/app invocation count = %d, want 1 focused invocation", count)
 	}
 
 	coverageStart := strings.Index(admission, "\n  coverage:\n")

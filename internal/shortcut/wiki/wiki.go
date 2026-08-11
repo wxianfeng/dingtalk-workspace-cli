@@ -16,7 +16,11 @@
 // management. Tool names and parameters mirror internal/helpers/wiki.go.
 package wiki
 
-import "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
+import (
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd/contract"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/shortcut"
+)
 
 // ── space (知识库) ────────────────────────────────────────────
 
@@ -130,6 +134,31 @@ var SpaceSearch = shortcut.Shortcut{
 	Description: "搜索知识库",
 	Intent:      "当你只记得知识库名称的部分关键词、想快速按名称定位某个知识库时使用；输入关键词返回匹配的知识库列表，比逐页 +space-list 更快找到目标 workspaceId。",
 	Risk:        shortcut.RiskRead,
+	Safety: contract.SafetySpec{
+		Effect: "read", Risk: "low",
+		Confirmation: "not_required", Idempotency: "idempotent",
+	},
+	Contract: corecmd.ContractDecl{
+		Identity: contract.ToolIdentitySpec{
+			ProductID:      "wiki",
+			Name:           "shortcut_space_search",
+			CanonicalPath:  "wiki.shortcut_space_search",
+			CLIPath:        "wiki +space-search",
+			PrimaryCLIPath: "wiki +space-search",
+		},
+		Description: "搜索知识库",
+		Interface: &contract.InterfaceSpec{
+			Mode:         "composite",
+			Availability: "available",
+			Reason:       "Reviewed built-in shortcut adapter: the executable CLI owns validation, optional multi-step orchestration, output projection, and confirmation; the complete command contract is not represented by one pinned MCP interface_ref.",
+		},
+		Selection: contract.SelectionSpec{
+			AgentSummary: "搜索知识库",
+			UseWhen:      []string{"当你只记得知识库名称的部分关键词、想快速按名称定位某个知识库时使用；输入关键词返回匹配的知识库列表，比逐页 +space-list 更快找到目标 workspaceId。"},
+			AvoidWhen:    []string{"需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令"},
+			Examples:     []string{"dws wiki +space-search --query \"产品文档\""},
+		},
+	},
 	Flags: []shortcut.Flag{
 		{Name: "query", Type: shortcut.FlagString, Desc: "搜索关键词", Required: true},
 		{Name: "limit", Type: shortcut.FlagString, Desc: "返回数量 1-20 (默认 10)"},

@@ -25,7 +25,7 @@ func runChatCoverageCommand(t *testing.T, caller edition.ToolCaller, args ...str
 	root.SilenceUsage = true
 	root.SetOut(io.Discard)
 	root.SetErr(io.Discard)
-	root.SetArgs(args)
+	root.SetArgs(append(append([]string(nil), args...), "--yes"))
 	return root.ExecuteContext(context.Background())
 }
 
@@ -41,6 +41,75 @@ func runChatCoverageDirect(t *testing.T, path []string, flags map[string]string)
 		}
 	}
 	return command.RunE(command, nil)
+}
+
+func TestCrossPlatformCoverageEvaluationRegressionChatSearchSpellingsAndNaturalBotTarget(t *testing.T) {
+	if got, err := resolveNativeChatTarget("  cid123456789  "); err != nil || got != "cid123456789" {
+		t.Fatalf("stable native chat target = %q, %v", got, err)
+	}
+	t.Run("group search path accepts query", func(t *testing.T) {
+		caller := &scriptedToolCaller{steps: []scriptedToolStep{{text: `{"result":[]}`}}}
+		if err := runChatCoverageCommand(t, caller, "group", "search", "--query", "项目群"); err != nil {
+			t.Fatal(err)
+		}
+		if caller.calls != 1 {
+			t.Fatalf("calls = %d", caller.calls)
+		}
+	})
+
+	t.Run("group search accepts positional", func(t *testing.T) {
+		caller := &scriptedToolCaller{steps: []scriptedToolStep{{text: `{"result":[]}`}}}
+		if err := runChatCoverageCommand(t, caller, "group", "search", "项目群"); err != nil {
+			t.Fatal(err)
+		}
+		if caller.calls != 1 {
+			t.Fatalf("calls = %d", caller.calls)
+		}
+	})
+
+	t.Run("native bots resolves group name", func(t *testing.T) {
+		caller := &scriptedToolCaller{steps: []scriptedToolStep{
+			{text: `{"result":[{"openConversationId":"cid-project","title":"项目群"}],"hasMore":false}`},
+			{text: `{"result":{"bots":[]}}`},
+		}}
+		if err := runChatCoverageCommand(t, caller, "group", "bots", "--group", "项目群"); err != nil {
+			t.Fatal(err)
+		}
+		if caller.calls != 2 {
+			t.Fatalf("calls = %d", caller.calls)
+		}
+	})
+}
+
+func TestCrossPlatformCoverageChatStableCompatibilityHintsRemainAvailable(t *testing.T) {
+	root := newChatCommand()
+	if len(root.Aliases) != 1 || root.Aliases[0] != "im" {
+		t.Fatalf("chat aliases = %v, want [im]", root.Aliases)
+	}
+	for _, tc := range []struct {
+		path string
+		args []string
+		hint string
+	}{
+		{path: "send", args: []string{"send", "--group", "cid-stable", "--text", "hello"}, hint: "dws chat message send"},
+		{path: "history", args: []string{"history", "--group", "cid-stable", "--limit", "20"}, hint: "dws chat message list --group <GROUP_OPEN_CONVERSATION_ID>"},
+	} {
+		command, remaining, err := root.Find([]string{tc.path})
+		if err != nil {
+			t.Fatalf("find chat %s: %v", tc.path, err)
+		}
+		if len(remaining) != 0 || command.Name() != tc.path {
+			t.Fatalf("find chat %s = command %q, remaining %v", tc.path, command.Name(), remaining)
+		}
+		if !command.Hidden || !command.Runnable() {
+			t.Fatalf("chat %s compatibility contract: hidden=%v runnable=%v", tc.path, command.Hidden, command.Runnable())
+		}
+		root.SetArgs(tc.args)
+		err = root.ExecuteContext(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "ambiguous command") || !strings.Contains(err.Error(), tc.hint) {
+			t.Fatalf("chat %s with legacy flags error = %v, want migration hint %q", tc.path, err, tc.hint)
+		}
+	}
 }
 
 func TestCrossPlatformCoverageChatGroupUpdateIconAcceptsUploadedMediaIDPrefixes(t *testing.T) {
@@ -112,6 +181,7 @@ func TestCrossPlatformCoverageChatCommandValidationAndSuccessEdges(t *testing.T)
 		{"message", "search", "--query=q", "--start=2026-01-02T00:00:00Z", "--end=2026-01-01T00:00:00Z"},
 		{"message", "search", "--query=q", "--start=2026-01-01T00:00:00Z", "--end=2026-01-02T00:00:00Z", "--group=cid"},
 		{"message", "recall", "--conversation-id=cid", "--msg-id=mid"},
+		{"category", "delete", "--category-id=1"},
 		{"category", "rename", "--category-id=1", "--title=renamed"},
 		{"category", "add-conv", "--group=cid", "--category-ids=1,2"},
 		{"category", "remove-conv", "--group=cid", "--category-ids=1,2"},
