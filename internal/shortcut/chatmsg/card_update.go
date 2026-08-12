@@ -59,9 +59,8 @@ func isCardBizIDPlaceholder(value string) bool {
 }
 
 // VerifyStreamingCardUpdate requires affirmative evidence that the requested
-// write took effect. A transport-level {success:true,errorCode:null} only says
-// that the RPC returned normally and is deliberately not accepted as proof of
-// a card update.
+// write took effect. update_streaming_card may acknowledge an applied write
+// with success=true without returning an updated flag or affected count.
 func VerifyStreamingCardUpdate(requestedBizID string, response map[string]any) (string, error) {
 	requestedBizID = strings.TrimSpace(requestedBizID)
 	observation := cardUpdateObservation{bizIDs: map[string]struct{}{}}
@@ -132,6 +131,23 @@ func observeCardUpdateMap(value map[string]any, observation *cardUpdateObservati
 			}
 		}
 	}
+	errorCode, hasErrorCode := value["errorCode"]
+	errorCodeEmpty := hasErrorCode && cardUpdateErrorCodeEmpty(errorCode)
+	if hasErrorCode && !errorCodeEmpty {
+		setNegativeCardUpdateEvidence(observation, "errorCode=non-empty")
+	}
+	if success, ok := value["success"].(bool); ok {
+		if success {
+			// Record success=true only when the same response envelope explicitly
+			// includes its business-error field. A non-empty code is already
+			// negative evidence above, so the two signals reject the conflict.
+			if hasErrorCode {
+				setPositiveCardUpdateEvidence(observation, "success=true")
+			}
+		} else {
+			setNegativeCardUpdateEvidence(observation, "success=false")
+		}
+	}
 
 	// Only documented response envelopes are traversed. This prevents an
 	// unrelated extension field containing "updated":true from proving the
@@ -141,6 +157,14 @@ func observeCardUpdateMap(value map[string]any, observation *cardUpdateObservati
 			observeCardUpdate(child, observation)
 		}
 	}
+}
+
+func cardUpdateErrorCodeEmpty(value any) bool {
+	if value == nil {
+		return true
+	}
+	code, ok := value.(string)
+	return ok && strings.TrimSpace(code) == ""
 }
 
 func setPositiveCardUpdateEvidence(observation *cardUpdateObservation, evidence string) {

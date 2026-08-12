@@ -108,7 +108,7 @@ func TestChatMessagePaginationDefaultSinglePageUnchanged(t *testing.T) {
 		{
 			name:   "search",
 			args:   []string{"message", "search", "--query", "发布", "--start", "2026-08-01T00:00:00+08:00", "--end", "2026-08-02T00:00:00+08:00"},
-			server: "",
+			server: "chat",
 			tool:   "search_messages_by_keyword",
 			want:   map[string]any{"keyword": "发布", "startTime": float64(1785513600000), "endTime": float64(1785600000000), "limit": 100, "cursor": "0"},
 		},
@@ -218,6 +218,21 @@ func TestChatMessagePaginationPageAllAggregatesSevenCommands(t *testing.T) {
 				messages := items[0].(map[string]any)["messages"].([]any)
 				if len(items) != 1 || len(messages) != 2 {
 					t.Fatalf("conversation items = %#v", items)
+				}
+				if tt.name == "search" {
+					projected, ok := got["messages"].([]any)
+					if !ok || len(projected) != 2 {
+						t.Fatalf("projected messages = %#v", got["messages"])
+					}
+					for i, wantID := range []string{"m1", "m2"} {
+						message, ok := projected[i].(map[string]any)
+						if !ok || message["messageId"] != wantID || message["openMessageId"] != wantID {
+							t.Fatalf("projected message %d = %#v", i, projected[i])
+						}
+						if _, exists := message["text"]; !exists {
+							t.Fatalf("projected message %d missing text: %#v", i, message)
+						}
+					}
 				}
 			} else if len(items) != 2 {
 				t.Fatalf("items = %#v", items)

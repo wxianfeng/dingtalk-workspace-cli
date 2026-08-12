@@ -1049,14 +1049,6 @@ func TestCrossPlatformCoverageMessagesSendCardDryRunAndFailureBoundaries(t *test
 			},
 			wantError: "biz-preserved",
 		},
-		{
-			name: "unverified update preserves id",
-			fake: &larkAlignmentCaller{responses: map[string]string{
-				"im/create_and_send_card":  `{"bizId":"biz-unverified"}`,
-				"im/update_streaming_card": `{"success":true,"errorCode":null}`,
-			}},
-			wantError: "biz-unverified",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			helpers.InitDeps(tc.fake)
@@ -1073,6 +1065,27 @@ func TestCrossPlatformCoverageMessagesSendCardDryRunAndFailureBoundaries(t *test
 			}
 		})
 	}
+
+	t.Run("success acknowledgement completes composite update", func(t *testing.T) {
+		fake := &larkAlignmentCaller{responses: map[string]string{
+			"im/create_and_send_card":  `{"bizId":"biz-acknowledged"}`,
+			"im/update_streaming_card": `{"success":true,"errorCode":null}`,
+		}}
+		helpers.InitDeps(fake)
+		root := newPlatformCoverageRoot()
+		root.SetArgs([]string{
+			"chat", "+messages-send-card",
+			"--group", "cid",
+			"--content", "完成",
+			"--yes",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if len(fake.calls) != 2 || fake.calls[1].tool != "update_streaming_card" {
+			t.Fatalf("calls = %#v", fake.calls)
+		}
+	})
 
 	for _, args := range [][]string{
 		{"--group", "cid", "--content", "x", "--flow-status", "6"},
@@ -1091,7 +1104,7 @@ func TestCrossPlatformCoverageMessagesSendCardDryRunAndFailureBoundaries(t *test
 	}
 }
 
-func TestCrossPlatformCoverageMessagesUpdateCardRejectsFalseSuccess(t *testing.T) {
+func TestCrossPlatformCoverageMessagesUpdateCardVerifiesSuccess(t *testing.T) {
 	t.Run("agent shortcut owns confirmation boundary", func(t *testing.T) {
 		fake := &larkAlignmentCaller{responses: map[string]string{
 			"im/update_streaming_card": `{"result":{"bizId":"biz-confirm","updated":true}}`,
@@ -1115,7 +1128,7 @@ func TestCrossPlatformCoverageMessagesUpdateCardRejectsFalseSuccess(t *testing.T
 		}
 	})
 
-	t.Run("generic success is unverified", func(t *testing.T) {
+	t.Run("success acknowledgement is verified", func(t *testing.T) {
 		fake := &larkAlignmentCaller{responses: map[string]string{
 			"im/update_streaming_card": `{"success":true,"errorCode":null}`,
 		}}
@@ -1128,10 +1141,8 @@ func TestCrossPlatformCoverageMessagesUpdateCardRejectsFalseSuccess(t *testing.T
 			"--flow-status", "3",
 			"--yes",
 		})
-		err := root.Execute()
-		var typed *apperrors.Error
-		if !errors.As(err, &typed) || typed.Reason != "streaming_card_update_unverified" {
-			t.Fatalf("error = %#v, want streaming_card_update_unverified", err)
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
 		}
 		if len(fake.calls) != 1 || fake.calls[0].tool != "update_streaming_card" {
 			t.Fatalf("calls = %#v", fake.calls)

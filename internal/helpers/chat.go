@@ -27,6 +27,79 @@ import (
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd/contract"
 )
 
+func callProjectedChatMessages(cmd *cobra.Command, toolName string, args map[string]any, search bool) error {
+	if deps.Caller.DryRun() {
+		return callMCPToolOnServer("chat", toolName, args)
+	}
+	text, err := callMCPToolReturnTextOnServer(cmd.Context(), "chat", toolName, args)
+	if err != nil {
+		var cliErr *CLIError
+		if errors.As(err, &cliErr) && cliErr.Operation == "" {
+			withOperation := *cliErr
+			withOperation.Operation = "chat/" + toolName
+			return &withOperation
+		}
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		return apperrors.NewAPI("MCP read tool returned no non-empty text content",
+			apperrors.WithOperation("chat/"+toolName),
+			apperrors.WithOrigin("mcp"),
+			apperrors.WithFailureStage("response_validation"),
+			apperrors.WithRetryable(true),
+			apperrors.WithReason("empty_tool_response"),
+		)
+	}
+	data := map[string]any{}
+	if err := unmarshalJSONUseNumber(text, &data); err != nil {
+		deps.Out.PrintRaw(text)
+		return nil
+	}
+
+	return writeCommandPayload(cmd, projectChatMessagesPayload(data, search))
+}
+
+func projectChatMessagesPayload(data map[string]any, search bool) map[string]any {
+	items := chatmsg.ListMessageItems(data)
+	if search {
+		items = chatmsg.SearchItems(data)
+	}
+	messages := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		projected := make(map[string]any, len(item)+8)
+		for key, value := range item {
+			projected[key] = value
+		}
+		for key, value := range chatmsg.ProjectMessageV1(item, true) {
+			if key == "messageId" || key == "text" {
+				projected[key] = value
+				continue
+			}
+			if _, exists := projected[key]; !exists {
+				projected[key] = value
+			}
+		}
+		if value, exists := item["openMessageId"]; exists {
+			projected["openMessageId"] = value
+		} else if value, exists := projected["messageId"]; exists {
+			projected["openMessageId"] = value
+		}
+		if value, exists := item["content"]; exists {
+			projected["content"] = value
+		} else if value, exists := projected["text"]; exists {
+			projected["content"] = value
+		}
+		messages = append(messages, projected)
+	}
+
+	payload := make(map[string]any, len(data)+1)
+	for key, value := range data {
+		payload[key] = value
+	}
+	payload["messages"] = messages
+	return payload
+}
+
 func resolveMessageForward(cmd *cobra.Command, defaultForward bool) (bool, error) {
 	forwardStr, _ := cmd.Flags().GetString("forward")
 	forward := forwardStr != "false"
@@ -137,13 +210,14 @@ func runConversationScopedPagedMessageSearch(
 	if err != nil {
 		return err
 	}
-	return runConversationScopedMessageSearch(
+	return runConversationScopedMessageSearchWithProjector(
 		cmd,
 		cfg.ServerID,
 		cfg.ToolName,
 		scopeParam,
 		toolArgs,
 		conversationIDs,
+		cfg.ProjectResult,
 	)
 }
 
@@ -152,6 +226,24 @@ func runConversationScopedMessageSearch(
 	serverID, toolName, scopeParam string,
 	toolArgs map[string]any,
 	conversationIDs []string,
+) error {
+	return runConversationScopedMessageSearchWithProjector(
+		cmd,
+		serverID,
+		toolName,
+		scopeParam,
+		toolArgs,
+		conversationIDs,
+		nil,
+	)
+}
+
+func runConversationScopedMessageSearchWithProjector(
+	cmd *cobra.Command,
+	serverID, toolName, scopeParam string,
+	toolArgs map[string]any,
+	conversationIDs []string,
+	projectResult func(map[string]any) map[string]any,
 ) error {
 	conversationIDs = uniqueNonEmptyStrings(conversationIDs)
 	if len(conversationIDs) == 0 {
@@ -302,6 +394,9 @@ func runConversationScopedMessageSearch(
 			paging["resumeCursorReliable"] = false
 		}
 		payload["paging"] = paging
+	}
+	if projectResult != nil {
+		payload = projectResult(payload)
 	}
 	return writeCommandPayload(cmd, payload)
 }
@@ -667,6 +762,17 @@ func pagedChatConversationMessagesConfig(toolName string, build func(*cobra.Comm
 	cfg := pagedChatMessagesConfig(toolName, build)
 	cfg.ItemPath = "result.conversationMessagesList"
 	cfg.AggregationMode = PagedAggregationConversationMessages
+	return cfg
+}
+
+func pagedProjectedChatSearchConfig(cmd *cobra.Command, toolName string, build func(*cobra.Command) (map[string]any, error)) PagedMCPCommandConfig {
+	cfg := pagedChatConversationMessagesConfig(toolName, build)
+	cfg.Fallback = func(args map[string]any) error {
+		return callProjectedChatMessages(cmd, toolName, args, true)
+	}
+	cfg.ProjectResult = func(payload map[string]any) map[string]any {
+		return projectChatMessagesPayload(payload, true)
+	}
 	return cfg
 }
 
@@ -1492,6 +1598,36 @@ func buildChatCrossOrgDataAuthArgs(cmd *cobra.Command) (map[string]any, error) {
 	return toolArgs, nil
 }
 
+func buildChatGroupShareInviteArgs(cmd *cobra.Command) (map[string]any, error) {
+	if err := validateRequiredFlags(cmd, "source"); err != nil {
+		return nil, err
+	}
+	target, _ := cmd.Flags().GetString("target")
+	receiver, _ := cmd.Flags().GetString("receiver")
+	if target == "" && receiver == "" {
+		return nil, fmt.Errorf("--target or --receiver is required")
+	}
+	if target != "" && receiver != "" {
+		return nil, fmt.Errorf("--target and --receiver are mutually exclusive")
+	}
+	toolArgs := map[string]any{
+		"sourceOpenConversationId": mustGetFlag(cmd, "source"),
+	}
+	if target != "" {
+		toolArgs["targetOpenConversationId"] = target
+	}
+	if receiver != "" {
+		toolArgs["receiverOpenDingTalkId"] = receiver
+	}
+	if v, _ := cmd.Flags().GetInt64("expires-seconds"); v > 0 || cmd.Flags().Changed("expires-seconds") {
+		toolArgs["expiresSeconds"] = v
+	}
+	if v, _ := cmd.Flags().GetString("uuid"); v != "" {
+		toolArgs["uuid"] = v
+	}
+	return toolArgs, nil
+}
+
 func appendChatChmodParams(cmd *cobra.Command, toolArgs map[string]any) error {
 	conversationID, _ := cmd.Flags().GetString("conversation-id")
 	openDingTalkID, _ := cmd.Flags().GetString("open-dingtalk-id")
@@ -1974,11 +2110,11 @@ func newChatCommand() *cobra.Command {
 			Parameters: []contract.ParamDecl{
 				{Name: "agentCode", Property: "agentCode", Required: boolPtr(false)},
 				{Name: "conversation-id", Property: "grantParams.openCid", Required: boolPtr(false)},
-				{Name: "grant-type", Property: "grantType", Required: boolPtr(false)},
+				{Name: "grant-type", Property: "grantType", Required: boolPtr(false), Enum: []string{"once", "session", "timed", "permanent"}},
 				{Name: "open-dingtalk-id", Property: "grantParams.openDingTalkId", Required: boolPtr(false)},
 				{Name: "permParam", Property: "grantParams", Required: boolPtr(false)},
-				{Name: "session-id", Property: "sessionId", Required: boolPtr(false)},
-				{Name: "ttl", Property: "ttl", Required: boolPtr(false)},
+				{Name: "session-id", Property: "sessionId", Required: boolPtr(false), RequiredWhen: "grant-type is session"},
+				{Name: "ttl", Property: "ttl", Required: boolPtr(false), RequiredWhen: "grant-type is timed"},
 				{Name: "user", Property: "grantParams.userId", Required: boolPtr(false)},
 			},
 		},
@@ -2017,10 +2153,15 @@ func newChatCommand() *cobra.Command {
 	chatDataAuthCrossOrgCmd.Flags().String("grant-type", "timed", "授权策略: once|session|timed|permanent")
 	chatDataAuthCrossOrgCmd.Flags().String("ttl", "24h", "timed 授权有效期，如 1h/4h/24h/7d")
 	chatDataAuthCrossOrgCmd.Flags().String("session-id", "", "session 授权的会话标识")
+	chatDataAuthCrossOrgCmd.Flags().BoolP("yes", "y", false, "确认执行跨组织 chat 数据授权")
 	DeclareLeafMetadata(chatDataAuthCrossOrgCmd, LeafSpec{
 		Safety: contract.SafetySpec{
-			Effect: "write", Risk: "medium",
-			Confirmation: "not_required", Idempotency: "unknown",
+			Effect: "write", Risk: "high",
+			Confirmation: "user_required", Idempotency: "unknown",
+		},
+		Validate: func(cmd *cobra.Command, args []string) error {
+			_, err := buildChatCrossOrgDataAuthArgs(cmd)
+			return err
 		},
 		Contract: LeafContract{
 			Identity: contract.ToolIdentitySpec{
@@ -2045,10 +2186,10 @@ func newChatCommand() *cobra.Command {
 			Parameters: []contract.ParamDecl{
 				{Name: "agentCode", Property: "agentCode", Required: boolPtr(false)},
 				{Name: "all", Property: "grantParams.targetOrgId", Required: boolPtr(false)},
-				{Name: "grant-type", Property: "grantType", Required: boolPtr(false)},
-				{Name: "session-id", Property: "sessionId", Required: boolPtr(false)},
+				{Name: "grant-type", Property: "grantType", Required: boolPtr(false), Enum: []string{"once", "session", "timed", "permanent"}},
+				{Name: "session-id", Property: "sessionId", Required: boolPtr(false), RequiredWhen: "grant-type is session"},
 				{Name: "target-org-id", Property: "grantParams.targetOrgId", Required: boolPtr(false)},
-				{Name: "ttl", Property: "ttl", Required: boolPtr(false)},
+				{Name: "ttl", Property: "ttl", Required: boolPtr(false), RequiredWhen: "grant-type is timed"},
 			},
 		},
 	})
@@ -2464,11 +2605,12 @@ func newChatCommand() *cobra.Command {
 	chatMessageListCmd := &cobra.Command{
 		Use:   "list",
 		Short: "拉取会话消息内容",
-		Long:  `拉取指定群聊或单聊的会话消息内容。--group 指定群聊，--user 指定单聊用户（userId），--open-dingtalk-id 指定单聊用户（openDingTalkId），三者互斥。推荐使用 --direction newer/older 控制时间方向：newer 表示从给定时间往现在拉，older 表示从给定时间往以前拉。hasMore=true 时用结果中的边界 createTime 作为下次 --time 翻页。引用回复消息会返回 quotedMessage 引用上下文；被引用的原消息是合并转发或图片时，对应的类型与内容也会随引用上下文返回。如果返回的会话消息中包含 openConvThreadId 字段，说明是话题消息，可以调用 dws chat message list-topic-replies 拉取话题回复消息列表，openConvThreadId 作为 topic-id 参数。`,
+		Long:  `拉取指定群聊或单聊的会话消息内容。输出顶层 messages，稳定字段为 messageId 和 text；兼容保留 openMessageId 和 content。--group 指定群聊，--user 指定单聊用户（userId），--open-dingtalk-id 指定单聊用户（openDingTalkId），三者互斥。推荐使用 --direction newer/older 控制时间方向：newer 表示从给定时间往现在拉，older 表示从给定时间往以前拉。hasMore=true 时用结果中的边界 createTime 作为下次 --time 翻页。引用回复消息会返回 quotedMessage 引用上下文；被引用的原消息是合并转发或图片时，对应的类型与内容也会随引用上下文返回。如果返回的会话消息中包含 openConvThreadId 字段，说明是话题消息，可以调用 dws chat message list-topic-replies 拉取话题回复消息列表，openConvThreadId 作为 topic-id 参数。`,
 		Example: `  dws chat message list --group <openconversation_id> --time "2025-03-01 00:00:00"
   dws chat message list --user <userId> --time "2025-03-01 00:00:00" --limit 50
   dws chat message list --open-dingtalk-id <openDingTalkId> --time "2025-03-01 00:00:00" --limit 50
   dws chat message list --group <openconversation_id> --time "2025-03-01 00:00:00" --direction older
+  dws chat message list --group <openconversation_id> --time "2025-03-01 00:00:00" --jq '.messages[] | {messageId, text}'
   # 查询群 ID: dws chat search --query "群名"
   # 查询 userId: dws contact user search --query "姓名"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2512,7 +2654,7 @@ func newChatCommand() *cobra.Command {
 				if v := chatIntFlagOrFallback(cmd, "limit", "size"); v > 0 {
 					toolArgs["limit"] = v
 				}
-				return callMCPTool("list_conversation_message_v2", toolArgs)
+				return callProjectedChatMessages(cmd, "list_conversation_message_v2", toolArgs, false)
 			}
 			toolArgs := map[string]any{
 				"time":    timeVal,
@@ -2526,7 +2668,7 @@ func newChatCommand() *cobra.Command {
 			if v := chatIntFlagOrFallback(cmd, "limit", "size"); v > 0 {
 				toolArgs["limit"] = v
 			}
-			return callMCPTool("list_individual_chat_message", toolArgs)
+			return callProjectedChatMessages(cmd, "list_individual_chat_message", toolArgs, false)
 		},
 	}
 	DeclareLeafMetadata(chatMessageListCmd, LeafSpec{
@@ -2552,7 +2694,10 @@ func newChatCommand() *cobra.Command {
 				AgentSummary: "分页读取指定会话消息及其引用上下文",
 				UseWhen:      []string{"用户明确指定某个会话，并要读取消息或追溯引用回复中的原消息上下文时"},
 				AvoidWhen:    []string{"跨全部会话按时间查询时使用 chat message list-all"},
-				Examples:     []string{"dws chat message list --group <openConversationId> --time \"2026-07-01 00:00:00\" --limit 50"},
+				Examples: []string{
+					"dws chat message list --group <openConversationId> --time \"2026-07-01 00:00:00\" --limit 50",
+					"dws chat message list --group <openConversationId> --time \"2026-07-01 00:00:00\" --limit 50 --jq '.messages[] | {messageId, text}'",
+				},
 			},
 			Parameters: []contract.ParamDecl{
 				{Name: "direction", Property: "forward"},
@@ -3625,17 +3770,18 @@ func newChatCommand() *cobra.Command {
 	chatMessageSearchCmd := &cobra.Command{
 		Use:   "search",
 		Short: "按关键词搜索消息",
-		Long:  `在当前用户的会话中按关键词搜索消息。--query 指定搜索关键词（必填）。可选 --group 限定搜索某个会话，不传则搜索所有会话。显式指定会话时，CLI 会先验证 CID，再扫描全局搜索流并在本地精确过滤，避免下层忽略非法 CID 或群聊 CID；默认最多扫描 40 页并返回至 --limit 条范围内消息。时间参数 --start/--end（ISO-8601）限定搜索时间范围。分页参数 --limit（默认 100）和 --cursor（默认 "0"）始终传递；hasMore=true 时用返回的 nextCursor 作为下次 --cursor 继续翻页。未指定会话时默认只读取单页；只有显式传 --page-all 才会自动翻页并保留、合并 result.conversationMessagesList，同一会话跨页合并 messages。只传 --page-limit、--max-items 或 --page-delay 仍保持默认行为。自动翻页时 --page-limit 控制最多请求页数，--max-items 按消息数精确截断，--page-delay 控制页间等待毫秒数。`,
+		Long:  `在当前用户的会话中按关键词搜索消息。输出顶层 messages，稳定字段为 messageId 和 text；兼容保留 openMessageId、content 和原始 result。--query 指定搜索关键词（必填）。可选 --group 限定搜索某个会话，不传则搜索所有会话。显式指定会话时，CLI 会先验证 CID，再扫描全局搜索流并在本地精确过滤，避免下层忽略非法 CID 或群聊 CID；默认最多扫描 40 页并返回至 --limit 条范围内消息。时间参数 --start/--end（ISO-8601）限定搜索时间范围。分页参数 --limit（默认 100）和 --cursor（默认 "0"）始终传递；hasMore=true 时用返回的 nextCursor 作为下次 --cursor 继续翻页。未指定会话时默认只读取单页；只有显式传 --page-all 才会自动翻页并保留、合并 result.conversationMessagesList，同一会话跨页合并 messages。只传 --page-limit、--max-items 或 --page-delay 仍保持默认行为。自动翻页时 --page-limit 控制最多请求页数，--max-items 按消息数精确截断，--page-delay 控制页间等待毫秒数。`,
 		Example: `  dws chat message search --query "changefree" --start "2026-04-01T00:00:00+08:00" --end "2026-04-15T00:00:00+08:00" --limit 50 --cursor 0
   dws chat message search --query "codereview" --group <openconversation_id> --start "2026-04-01T00:00:00+08:00" --end "2026-04-15T00:00:00+08:00" --limit 100 --cursor 0
   dws chat message search --query "链接" --start "2026-04-15T00:00:00+08:00" --end "2026-04-16T00:00:00+08:00" --limit 100 --cursor <nextCursor>
   dws chat message search --query "发布计划" --start "2026-04-01T00:00:00+08:00" --end "2026-04-15T00:00:00+08:00" --limit 100 --page-all --max-items 300 --page-delay 0
-	  # 查询群 ID: dws chat search --query "群名"`,
+  dws chat message search --query "发布计划" --start "2026-07-01T00:00:00+08:00" --end "2026-07-10T00:00:00+08:00" --jq '.messages[] | {messageId, text}'
+  # 查询群 ID: dws chat search --query "群名"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			groupID := flagOrFallback(cmd, "group", "conversation-id", "id", "chat")
 			return runConversationScopedPagedMessageSearch(
 				cmd,
-				pagedChatConversationMessagesConfig("search_messages_by_keyword", chatMessageSearchArgs),
+				pagedProjectedChatSearchConfig(cmd, "search_messages_by_keyword", chatMessageSearchArgs),
 				"openConversationId",
 				[]string{groupID},
 			)
@@ -3666,7 +3812,7 @@ func newChatCommand() *cobra.Command {
 				AvoidWhen:    []string{"需要多会话、发送者或 @维度组合时使用 search-advanced"},
 				Examples: []string{
 					"dws chat message search --query \"发布计划\" --start \"2026-07-01T00:00:00+08:00\" --end \"2026-07-10T00:00:00+08:00\"",
-					"dws chat message search --query \"发布计划\" --start \"2026-07-01T00:00:00+08:00\" --end \"2026-07-10T00:00:00+08:00\" --page-all --max-items 300",
+					"dws chat message search --query \"发布计划\" --start \"2026-07-01T00:00:00+08:00\" --end \"2026-07-10T00:00:00+08:00\" --page-all --max-items 300 --jq '.messages[] | {messageId, text}'",
 				},
 			},
 			Parameters: append([]contract.ParamDecl{
@@ -5575,27 +5721,41 @@ chat message edit 或 chat message recall 的 --msg-id 和 --conversation-id。
 		Use:   "send-card",
 		Short: "创建并推送流式卡片",
 		Long: `向群聊或单聊创建并推送流式卡片。群聊传 --group，单聊传 --receiver，二者互斥。
+群聊创建卡片时可通过 --at-open-dingtalk-ids @指定成员，或通过 --at-all @所有人。
 创建时无需传入卡片内容，后续通过 update-card 更新内容。
 
 注意：send-card 必须和 update-card 搭配使用。发送卡片后，使用返回的 bizId 调用 update-card 更新内容，
 最后一次更新必须将 --flow-status 设为 3（finish），否则卡片会一直处于"生成中"的加载状态。
 flow-status 取值：1=处理中(PROCESSING)，2=输入中(INPUTTING)，3=完成(FINISH)，4=执行中(EXECUTING)，5=错误(ERROR)。`,
 		Example: `  dws chat message send-card --group <openConversationId>
+  dws chat message send-card --group <openConversationId> --at-open-dingtalk-ids <openDingTalkId>
+  dws chat message send-card --group <openConversationId> --at-all
   dws chat message send-card --receiver <openDingTalkId>
   # 查询群 ID: dws chat search --query "群名"
   # 查询人员: dws contact user search --keyword "姓名" --format json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			groupID := flagOrFallback(cmd, "group", "conversation-id", "id", "chat")
 			receiver, _ := cmd.Flags().GetString("receiver")
+			atOpenDingTalkIDs := uniqueNonEmptyStrings(parseCSVValues(mustGetFlag(cmd, "at-open-dingtalk-ids")))
+			atAll, _ := cmd.Flags().GetBool("at-all")
 			if groupID == "" && receiver == "" {
 				return fmt.Errorf("--group or --receiver is required")
 			}
 			if groupID != "" && receiver != "" {
 				return fmt.Errorf("--group and --receiver are mutually exclusive")
 			}
+			if groupID == "" && (len(atOpenDingTalkIDs) > 0 || atAll) {
+				return fmt.Errorf("--at-open-dingtalk-ids and --at-all are only supported with --group")
+			}
 			toolArgs := map[string]any{}
 			if groupID != "" {
 				toolArgs["openConversationId"] = groupID
+				if len(atOpenDingTalkIDs) > 0 {
+					toolArgs["atOpenDingTalkIds"] = atOpenDingTalkIDs
+				}
+				if atAll {
+					toolArgs["atAll"] = true
+				}
 			}
 			if receiver != "" {
 				resolved, err := resolveOpenDingTalkID(cmd.Context(), receiver)
@@ -5620,19 +5780,21 @@ flow-status 取值：1=处理中(PROCESSING)，2=输入中(INPUTTING)，3=完成
 				CLIPath:        "chat message send-card",
 				PrimaryCLIPath: "chat message send-card",
 			},
-			Description: "创建并向群聊或单聊发送互动卡片",
+			Description: "创建并向群聊或单聊发送互动卡片；群聊创建时可 @成员或 @所有人",
 			Interface: &contract.InterfaceSpec{
 				Mode:         "mcp",
 				Availability: "available",
 				Ref:          &contract.InterfaceRefSpec{ProductID: "im", RPCName: "create_and_send_card"},
 			},
 			Selection: contract.SelectionSpec{
-				AgentSummary: "创建并向群聊或单聊发送互动卡片",
-				UseWhen:      []string{"需要卡片式交互且已准备接收会话或用户时"},
+				AgentSummary: "创建并向群聊或单聊发送互动卡片；群聊创建时可 @成员或 @所有人",
+				UseWhen:      []string{"需要创建卡片且已准备接收会话或用户时；群聊创建可同时指定 @成员或 @所有人"},
 				AvoidWhen:    []string{"只发送普通文本时使用 send 或 send-by-bot"},
 				Examples:     []string{"dws chat message send-card --group <openConversationId>"},
 			},
 			Parameters: []contract.ParamDecl{
+				{Name: "at-all", Property: "atAll", Required: boolPtr(false), InterfaceType: "boolean"},
+				{Name: "at-open-dingtalk-ids", Property: "atOpenDingTalkIds", Required: boolPtr(false), InterfaceType: "array"},
 				{Name: "group", Property: "openConversationId"},
 				{Name: "receiver", Property: "receiverOpenDingTalkId"},
 			},
@@ -5640,6 +5802,8 @@ flow-status 取值：1=处理中(PROCESSING)，2=输入中(INPUTTING)，3=完成
 	})
 	chatMessageSendCardCmd.Flags().String("group", "", "群聊 openConversationId（群聊时必填，与 --receiver 互斥）")
 	chatMessageSendCardCmd.Flags().String("receiver", "", "单聊接收者 openDingTalkId（单聊时必填，与 --group 互斥）")
+	chatMessageSendCardCmd.Flags().String("at-open-dingtalk-ids", "", "群聊创建卡片时 @ 的 openDingTalkId 列表，逗号分隔（仅与 --group 一起使用）")
+	chatMessageSendCardCmd.Flags().Bool("at-all", false, "群聊创建卡片时 @ 所有人（仅与 --group 一起使用）")
 
 	chatMessageUpdateCardCmd := &cobra.Command{
 		Use:   "update-card",
@@ -8227,12 +8391,16 @@ status 可选值:
 			if err != nil {
 				return fmt.Errorf("--record-id must be a valid integer: %w", err)
 			}
+			status := mustGetFlag(cmd, "status")
+			if status != "AuditApprove" && status != "AuditDelete" {
+				return fmt.Errorf("unsupported audit status %q, must be one of: AuditApprove, AuditDelete", status)
+			}
 			toolArgs := map[string]any{
 				"openConversationId": mustGetFlag(cmd, "group"),
 				"applyRecordId":      recordID,
 				"applicantUid":       mustGetFlag(cmd, "applicant"),
 				"inviterUid":         mustGetFlag(cmd, "inviter"),
-				"status":             mustGetFlag(cmd, "status"),
+				"status":             status,
 			}
 			if v, _ := cmd.Flags().GetString("description"); v != "" {
 				toolArgs["auditDescription"] = v
@@ -8282,7 +8450,7 @@ status 可选值:
 				{Name: "group", Property: "openConversationId", Required: boolPtr(true)},
 				{Name: "inviter", Property: "inviterUid", Required: boolPtr(true)},
 				{Name: "record-id", Property: "applyRecordId", Required: boolPtr(true), InterfaceType: "integer"},
-				{Name: "status", Property: "status", Required: boolPtr(true), Enum: []string{"AuditApprove", "AuditDelete", "AuditIgnore", "AuditRefuse", "AuditBlock"}},
+				{Name: "status", Property: "status", Required: boolPtr(true), Enum: []string{"AuditApprove", "AuditDelete"}},
 			},
 		},
 	})
@@ -9386,31 +9554,9 @@ status 可选值:
   dws chat group share-invite --source <openConversationId> --target <openConversationId> --expires-seconds 86400
   # 查询群 ID: dws chat search --query "群名"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateRequiredFlags(cmd, "source"); err != nil {
+			toolArgs, err := buildChatGroupShareInviteArgs(cmd)
+			if err != nil {
 				return err
-			}
-			target, _ := cmd.Flags().GetString("target")
-			receiver, _ := cmd.Flags().GetString("receiver")
-			if target == "" && receiver == "" {
-				return fmt.Errorf("--target or --receiver is required")
-			}
-			if target != "" && receiver != "" {
-				return fmt.Errorf("--target and --receiver are mutually exclusive")
-			}
-			toolArgs := map[string]any{
-				"sourceOpenConversationId": mustGetFlag(cmd, "source"),
-			}
-			if target != "" {
-				toolArgs["targetOpenConversationId"] = target
-			}
-			if receiver != "" {
-				toolArgs["receiverOpenDingTalkId"] = receiver
-			}
-			if v, _ := cmd.Flags().GetInt64("expires-seconds"); v > 0 || cmd.Flags().Changed("expires-seconds") {
-				toolArgs["expiresSeconds"] = v
-			}
-			if v, _ := cmd.Flags().GetString("uuid"); v != "" {
-				toolArgs["uuid"] = v
 			}
 			return callMCPToolOnServer("im", "share_group_invite_url", toolArgs)
 		},
@@ -9421,10 +9567,11 @@ status 可选值:
 	chatGroupShareInviteCmd.Flags().String("receiver", "", "接收分享消息的单聊用户 openDingTalkId（与 --target 二选一）")
 	chatGroupShareInviteCmd.Flags().Int64("expires-seconds", 0, "链接有效期（秒），0 表示永久有效，不传使用服务端默认值")
 	chatGroupShareInviteCmd.Flags().String("uuid", "", "消息幂等键（可选）")
+	chatGroupShareInviteCmd.Flags().BoolP("yes", "y", false, "确认分享群邀请链接")
 	DeclareLeafMetadata(chatGroupShareInviteCmd, LeafSpec{
 		Safety: contract.SafetySpec{
 			Effect: "write", Risk: "medium",
-			Confirmation: "not_required", Idempotency: "unknown",
+			Confirmation: "user_required", Idempotency: "unknown",
 		},
 		Contract: LeafContract{
 			Identity: contract.ToolIdentitySpec{

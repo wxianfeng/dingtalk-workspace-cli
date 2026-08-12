@@ -70,15 +70,17 @@ The installer ships skills in one of two layouts. CLI commands (`dws aitable ...
 
 | Mode | What gets installed | Best for |
 |------|----------------------|----------|
-| **mono** (stable, default) | One `dws` skill covering all products | Cross-product workflows; single entry point |
-| **multi** | Per-product skills (`dingtalk-aitable`, `dingtalk-calendar`, `dingtalk-chat`, ...) | Single-product tasks; smaller context per call |
+| **multi** (default) | Per-product skills (`dingtalk-aitable`, `dingtalk-calendar`, `dingtalk-chat`, ...) | Single-product tasks; smaller context per call |
+| **mono** (legacy) | One `dws` skill covering all products | Cross-product workflows; single entry point |
+
+> Installs and upgrades default to `multi`. `mono` remains available via `DWS_SKILL_MODE=mono` or `dws skill setup --mode mono`. File issues if you hit problems.
 
 How to pick:
 
-- **Quick install** (one-liner above): non-interactive, installs `mono`.
-- **TTY install** (download then run): `curl -O .../install.sh && bash install.sh` — prompts `1) mono  2) multi` (default 1).
-- **Override via env**: `DWS_SKILL_MODE=multi curl -fsSL ... | sh`.
-- **Switch later**: `dws skill setup --mode multi` (or `--mode mono`) — re-run any time.
+- **Quick install** (one-liner above): non-interactive, installs `multi`.
+- **TTY install** (download then run): `curl -O .../install.sh && bash install.sh` — prompts `1) multi  2) mono` (default 1).
+- **Override via env**: `DWS_SKILL_MODE=mono curl -fsSL ... | sh`.
+- **Switch later**: `dws skill setup --mode mono` (or `--mode multi`) — review the listed paths and confirm interactively.
 
 </details>
 
@@ -208,7 +210,7 @@ The verifier uses isolated directories and does not replace the `dws` on the cur
 The upgrade process follows a two-phase atomic flow to ensure consistency:
 
 1. **Prepare** — downloads the platform-specific binary and skill packages to a temporary directory, verifies SHA256 checksums, and extracts/validates all files. If any step fails, the upgrade aborts without modifying the existing installation.
-2. **Apply** — only after all preparations succeed, the binary is replaced and skill packages are installed to all detected agent directories (`~/.agents/skills/dws`, `~/.claude/skills/dws`, `~/.cursor/skills/dws`, etc.).
+2. **Apply** — only after all preparations succeed, the binary is replaced and skills are flattened into detected agent-specific roots (for example `~/.codex/skills/dingtalk-chat`). `~/.agents/skills` is used only when no specific Agent is detected; once a specific root is active, older DWS-managed generic copies are backed up and retired so the same Skill is not discovered twice.
 
 A backup of the current version is automatically created before each upgrade. Use `dws upgrade --rollback` to restore the previous version if needed.
 
@@ -391,19 +393,19 @@ dws aitable record query --base-id BASE_ID --table-id TABLE_ID --limit 10
 
 The repo ships a complete Agent Skill system under `skills/`, organized into two layouts:
 
-- `skills/mono/` — single-skill layout (one `SKILL.md` + `references/products/`), recommended default.
-- `skills/multi/` — per-product skills (`dingtalk-aitable/`, `dingtalk-calendar/`, `dingtalk-chat/`, ...), each with its own `SKILL.md`.
+- `skills/mono/` — single-skill layout (one `SKILL.md` + `references/products/`), legacy.
+- `skills/multi/` — per-product skills (`dingtalk-aitable/`, `dingtalk-calendar/`, `dingtalk-chat/`, ...), each with its own `SKILL.md`. Default layout.
 
 Leaf safety/parameters/selection prose for Schema generation come from ProductDecl / ContractFinal declarations in Go. The former `internal/cli/schema_hints/` HintFile tree is fully retired and must not reappear.
 
 After installing, AI tools like Claude Code / Cursor can operate DingTalk directly through natural language:
 
 ```bash
-# Install skills into current project (defaults to mono)
+# Install skills into current project (defaults to multi; DWS_SKILL_MODE=mono switches back)
 curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace-cli/main/scripts/install-skills.sh | sh
 ```
 
-> `install.sh` installs to `$HOME/.agents/skills/dws` (global); `install-skills.sh` installs to `./.agents/skills/dws` (current project).
+> Installers prefer detected agent-specific roots such as `$HOME/.codex/skills/`. They use `.agents/skills/` only as the generic fallback when no specific Agent is detected; multi layout is per-product siblings, while mono uses the `dws/` subdirectory.
 >
 > China users: prefix `DWS_GITEE_REPO` to use the Gitee mirror — see [China mirror](#china-mirror).
 
@@ -413,13 +415,18 @@ curl -fsSL https://raw.githubusercontent.com/DingTalk-Real-AI/dingtalk-workspace
 # Interactive: prompts for mode + target agents
 dws skill setup
 
-# Install mono skill to every detected agent home (claude / cursor / codex / opencode / qoder)
-dws skill setup --mode mono --target all --yes
+# Preview the exact directories that mono setup would back up and replace
+dws skill setup --mode mono --target all --dry-run
 
-# Install multi skills to a single agent home
-dws skill setup --mode multi --target cursor --yes
+# Run interactively and confirm the listed directories
+dws skill setup --mode mono --target all
 
-# Point at a local source tree (e.g. a fork or work-in-progress)
+# Preview, then install multi skills to a single agent home with interactive confirmation
+dws skill setup --mode multi --target cursor --dry-run
+dws skill setup --mode multi --target cursor
+
+# Point at a local source tree (e.g. a fork or work-in-progress), preview first
+DWS_SKILL_SOURCE=/path/to/skills dws skill setup --mode multi --dry-run
 DWS_SKILL_SOURCE=/path/to/skills dws skill setup --mode multi
 ```
 
@@ -428,7 +435,11 @@ DWS_SKILL_SOURCE=/path/to/skills dws skill setup --mode multi
 | `--mode` | `mono` \| `multi` | Skill layout; defaults to interactive prompt |
 | `--target` | `all` \| `claude` \| `cursor` \| `codex` \| `opencode` \| `qoder` | Where to install; `all` covers every detected agent home |
 | `--source` | path | Local source directory (overrides bundled skills) |
-| `--yes` | — | Skip confirmation prompts |
+| `--yes` | — | Scripting-only: skip the confirmation prompt. Removals are still backed up to `~/.dws/skill-backups/` first |
+
+> The setup command can remove the opposite-mode layout (`dws/` for multi, DWS-managed multi Skills for mono) and stale managed Skills not in the bundle. DWS records ownership, installer version, source, and content digest centrally in `~/.dws/skills-state.json` (or `$DWS_CONFIG_DIR/skills-state.json`). Exact official names shipped before the centralized state remain a frozen migration list. A `dingtalk-*` prefix alone never authorizes cleanup, so other same-prefix market/user Skills are preserved. Every removal is previewed before confirmation and preserved under `~/.dws/skill-backups/<timestamp>/`; a directory that cannot be backed up is never removed. In a non-interactive shell, first run `--dry-run` and inspect its output; only then may the caller explicitly choose the scripting-only confirmation bypass.
+
+After a multi setup or upgrade, DWS stores the official bundle snapshot and centralized ownership metadata in `~/.dws/skills-state.json` (or `$DWS_CONFIG_DIR/skills-state.json`). Every upgrade installs and overwrites the complete bundled Skill set from that release. Deleting or excluding a bundled Skill is not sticky: the next upgrade restores it. `dws upgrade --force` additionally allows reinstalling the current CLI version when no newer version is available.
 
 Env vars: `DWS_SKILL_MODE=mono|multi` (also honored by `install.sh` / `install.ps1`), `DWS_SKILL_SOURCE=<path>`.
 
@@ -726,7 +737,7 @@ See [`docs/robot-quickstart.md`](./docs/robot-quickstart.md) for the full 4-step
 <summary>Coming soon</summary>
 
 - `conference` (video meetings)
-- Multi-skill mode (experimental) — per-product skills under `skills/multi/`; opt in via `dws skill setup --mode multi`
+- Multi-skill mode (default) — per-product skills under `skills/multi/`; installs and upgrades default to it, `dws skill setup --mode mono` switches back after interactive confirmation
 
 </details>
 

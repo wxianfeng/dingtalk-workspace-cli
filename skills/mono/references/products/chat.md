@@ -2386,7 +2386,7 @@ dws chat message send --group <openConversationId> --msg-type image --media-id "
 
 #### 创建并推送流式卡片 — 向群聊或单聊发送流式卡片消息
 
-群聊传 --group，单聊传 --receiver，二者互斥。
+群聊传 --group，单聊传 --receiver，二者互斥。群聊创建时可通过 --at-open-dingtalk-ids @指定成员，或通过 --at-all @所有人。
 
 **注意：send-card 必须和 update-card 搭配使用。** 创建卡片时无需传入内容，后续通过 update-card 更新内容，最后一次更新必须将 --flow-status 设为 3（finish），否则卡片会一直处于"生成中"的加载状态。
 flow-status 取值：1=处理中(PROCESSING)，2=输入中(INPUTTING)，3=完成(FINISH)，4=执行中(EXECUTING)，5=错误(ERROR)。
@@ -2395,12 +2395,16 @@ Usage:
   dws chat message send-card [flags]
 Example:
   dws chat message send-card --group <openConversationId>
+  dws chat message send-card --group <openConversationId> --at-open-dingtalk-ids <openDingTalkId>
+  dws chat message send-card --group <openConversationId> --at-all
   dws chat message send-card --receiver <openDingTalkId>
   # 查询群 ID: dws chat search --query "群名"
   # 查询人员: dws aisearch person --keyword "姓名" --dimension name
 Flags:
-      --group string      群聊 openConversationId（群聊时必填，与 --receiver 互斥）
-      --receiver string   单聊接收者 openDingTalkId（单聊时必填，与 --group 互斥）
+      --at-all                           群聊创建卡片时 @ 所有人（仅与 --group 一起使用）
+      --at-open-dingtalk-ids string      群聊创建卡片时 @ 的 openDingTalkId 列表，逗号分隔（仅与 --group 一起使用）
+      --group string                     群聊 openConversationId（群聊时必填，与 --receiver 互斥）
+      --receiver string                  单聊接收者 openDingTalkId（单聊时必填，与 --group 互斥）
 ```
 
 #### 流式更新卡片内容 — 更新已发送的流式卡片内容
@@ -2409,6 +2413,7 @@ Flags:
 flow-status 取值：1=处理中(PROCESSING)，2=输入中(INPUTTING)，3=完成(FINISH)，4=执行中(EXECUTING)，5=错误(ERROR)。
 
 **最后一次更新必须将 --flow-status 设为 3（finish），否则卡片会一直处于"生成中"的加载状态。**
+更新结果不确定时不要再次执行更新；保留返回结果并告知用户。
 ```
 Usage:
   dws chat message update-card [flags]

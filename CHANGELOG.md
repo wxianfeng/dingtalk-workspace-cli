@@ -6,6 +6,51 @@ The format is inspired by [Keep a Changelog](https://keepachangelog.com/) and th
 
 ## [Unreleased]
 
+## [1.0.58-beta.4] - 2026-08-12
+
+### Added
+
+- **Multi-skill installation and upgrade** — fresh installs, `dws skill setup`,
+  and `dws upgrade` now use the multi-skill layout by default. Existing mono
+  installations migrate during upgrade; mono remains an explicit legacy option.
+- **Native streaming-card mentions** — `dws chat message send-card` now accepts
+  `--at-open-dingtalk-ids` and `--at-all` for group cards and forwards them to
+  `create_and_send_card`, matching the existing shortcut behavior without
+  changing single-chat card creation.
+- **Expanded Minutes workflows** — 27 public Minutes shortcuts now cover
+  upload, download, export, recording, analysis, sharing, and recovery flows;
+  every write command keeps an explicit confirmation requirement.
+- **Chat command discovery** — 30 existing typed Chat commands are now
+  available in the runtime Schema and Agent catalog, with sensitive writes
+  carrying their required confirmation metadata.
+
+### Changed
+
+- **Chat read results** — typed commands and shortcuts now expose a consistent
+  top-level `messages` list with stable `messageId` and `text` fields while
+  retaining existing response envelopes and fields.
+- **Wiki feed results** — Wiki feed list output now formats time fields and
+  trims excess fields. Its `--limit` default is 10 and maximum is 20.
+- **Developer command results** — the `dev` and selected `devapp` commands now
+  use the unified result envelope for consistent success, pending, partial,
+  and failure reporting.
+- **Evaluation dispatch hardening** — `/eval` now uses a verifiable polling
+  relay instead of direct access from the hosted runner, binding the workflow,
+  comment, PR head, parameters, and result provenance.
+
+### Fixed
+
+- **Streaming-card update acknowledgement** — accepts the pre-production
+  `success: true` response from `update_streaming_card` as affirmative write
+  evidence while preserving explicit negative, conflicting, and bizId-drift
+  failures, so Agents do not repeat an update that the service already applied.
+- **Text input bounds** — literal input, stdin, and `@file` inputs now all
+  enforce the same byte limit; file reads validate the opened descriptor and
+  cannot exceed the limit after a path replacement or file growth.
+- **Evaluation PR comments** — restores `/eval` PR conversation comments with
+  the least required pull-request write permission and actionable GitHub 403
+  diagnostics.
+
 ## [1.0.58-beta.3] - 2026-08-11
 
 ### Added

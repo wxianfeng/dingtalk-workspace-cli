@@ -77,7 +77,7 @@ func TestCrossPlatformCoverageNativeMessageUpdateCardVerifiesWrite(t *testing.T)
 		}
 	})
 
-	t.Run("generic success is unverified", func(t *testing.T) {
+	t.Run("success acknowledgement is verified", func(t *testing.T) {
 		caller := &scriptedToolCaller{steps: []scriptedToolStep{{text: `{"success":true,"errorCode":null}`}}}
 		err := runNativeCardUpdate(t, caller,
 			"message", "update-card",
@@ -85,9 +85,11 @@ func TestCrossPlatformCoverageNativeMessageUpdateCardVerifiesWrite(t *testing.T)
 			"--content", "完成",
 			"--flow-status", "3",
 		)
-		var typed *apperrors.Error
-		if !errors.As(err, &typed) || typed.Reason != "streaming_card_update_unverified" {
-			t.Fatalf("error = %#v, want streaming_card_update_unverified", err)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if caller.calls != 1 || caller.tool != "update_streaming_card" {
+			t.Fatalf("call = count:%d tool:%q", caller.calls, caller.tool)
 		}
 	})
 

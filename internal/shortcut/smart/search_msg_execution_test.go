@@ -31,6 +31,7 @@ type searchMsgExecutionCaller struct {
 	missingMgetCID bool
 	firstResponse  string
 	mgetResponse   string
+	numericZeroEnd bool
 }
 
 func (f *searchMsgExecutionCaller) CallTool(_ context.Context, product, tool string, args map[string]any) (*edition.ToolResult, error) {
@@ -54,6 +55,9 @@ func (f *searchMsgExecutionCaller) CallTool(_ context.Context, product, tool str
 		}
 		if f.omitPagination {
 			return searchMsgToolResult(`{"result":{"messages":[{"openMessageId":"m1","openConversationId":"cid-1","content":"sparse-1"}]}}`), nil
+		}
+		if f.numericZeroEnd {
+			return searchMsgToolResult(`{"result":{"messages":[{"openMessageId":"m1","content":"sparse-1"}],"hasMore":false,"nextCursor":0}}`), nil
 		}
 		if args["cursor"] == "c2" {
 			if f.failSecondPage {
@@ -231,6 +235,17 @@ func TestCrossPlatformCoverageSearchMsgMissingPaginationCannotClaimComplete(t *t
 	failure, _ := failures[0].(map[string]any)
 	if failure["stage"] != "search-pagination" {
 		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestCrossPlatformCoverageSearchMsgNumericZeroCursorIsComplete(t *testing.T) {
+	caller := &searchMsgExecutionCaller{numericZeroEnd: true}
+	payload := executeSearchMsg(t, caller, "--query", "周报", "--no-enrich")
+	if payload["complete"] != true || payload["hasMore"] != false || payload["paginationKnown"] != true {
+		t.Fatalf("numeric zero cursor pagination = %#v", payload)
+	}
+	if payload["nextCursor"] != "" {
+		t.Fatalf("numeric zero cursor exposed as next page: %#v", payload["nextCursor"])
 	}
 }
 

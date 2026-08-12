@@ -701,9 +701,7 @@ func executeChatChangedContract(t *testing.T, caller *chatChangedContractCaller,
 	InitDeps(caller)
 	deps.Out.w = io.Discard
 	cmd := newChatCommand()
-	if cmd.PersistentFlags().Lookup("yes") == nil {
-		cmd.PersistentFlags().Bool("yes", false, "skip confirmation")
-	}
+	installExampleGlobalFlags(cmd)
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
 	cmd.SetArgs(append(append([]string(nil), args...), "--yes"))
@@ -743,6 +741,22 @@ func TestCrossPlatformCoverageChatAuditUsesUserIDs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(caller.calls[0].args, want) {
 		t.Fatalf("tool args = %#v, want %#v", caller.calls[0].args, want)
+	}
+}
+
+func TestCrossPlatformCoverageChatAuditRejectsUnsupportedStatus(t *testing.T) {
+	caller := &chatChangedContractCaller{}
+	err := executeChatChangedContract(t, caller,
+		"group", "audit-join-validation",
+		"--group", "cid-1", "--record-id", "123", "--applicant", "user-a", "--inviter", "user-b", "--status", "AuditRefuse")
+	if err == nil {
+		t.Fatal("expected unsupported audit status error")
+	}
+	if !strings.Contains(err.Error(), `unsupported audit status "AuditRefuse"`) {
+		t.Fatalf("error = %v, want unsupported status", err)
+	}
+	if len(caller.calls) != 0 {
+		t.Fatalf("unsupported status must not call MCP: %#v", caller.calls)
 	}
 }
 

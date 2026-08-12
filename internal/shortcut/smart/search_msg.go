@@ -71,7 +71,7 @@ var SearchMsg = shortcut.Shortcut{
 			AvoidWhen:    []string{"只想查看或导出一个指定会话的消息记录、且没有发送者、关键词、@对象或消息类型等主要筛选条件时使用 +chat-messages；已有精确消息 ID 时使用 +messages-mget"},
 			Examples: []string{
 				"dws chat +search-msg --query \"周报\" --senders <openDingTalkId> --days 3 --page-all",
-				"dws chat +search-msg --group <openConversationId> --message-type file --download-resources --output-dir ./downloads",
+				"dws chat +search-msg --query \"周报\" --senders <openDingTalkId> --days 3 --page-all --jq '.messages[] | {messageId, text}'",
 			},
 		},
 	},
@@ -142,6 +142,7 @@ var SearchMsg = shortcut.Shortcut{
 	Tips: []string{
 		`dws chat +search-msg --group <openConversationId> --query "changefree"`,
 		`dws chat +search-msg --senders <openDingTalkId> --at-me --days 3 --page-all`,
+		`dws chat +search-msg --group <openConversationId> --query "changefree" --jq '.messages[] | {messageId, text}'`,
 	},
 	Validate: validateSearchMsgWithResources,
 	Execute: func(rt *shortcut.RuntimeContext) error {
@@ -602,43 +603,24 @@ func searchMsgItems(data map[string]any) []map[string]any {
 	return chatmsg.SearchItems(data)
 }
 
-func searchMsgChildMap(data map[string]any, key string) map[string]any {
-	if value, ok := data[key].(map[string]any); ok {
-		return value
-	}
-	return nil
-}
-
-// searchMsgProject reshapes one matched message into {sender, time, text,
-// messageId}, running text through the shared chatmsg cleaning (card/auto-reply
-// JSON → readable, ciphertext → marker) and recursively expanding any forwarded
-// chat record under "forwarded".
+// searchMsgProject adds search-only sender/time aliases and forwarded-message
+// expansion to the shared message projection.
 func searchMsgProject(m map[string]any) map[string]any {
 	return searchMsgProjectWithReactions(m, true)
 }
 
 func searchMsgProjectWithReactions(m map[string]any, includeReactions bool) map[string]any {
 	row := chatmsg.ProjectMessageV1(m, includeReactions)
-	// Preserve the established search aliases while also publishing the V1
-	// canonical fields used by other message readers.
+	// Keep search-only aliases while messageId/text stay owned by the shared
+	// projection used by typed message search.
 	row["sender"] = searchMsgSender(m)
 	row["time"] = searchMsgTime(m)
-	row["text"] = searchMsgCleanText(m)
-	row["messageId"] = searchMsgMessageID(m)
 	if forwarded := chatmsg.Forwarded(m, func(item map[string]any) map[string]any {
 		return searchMsgProjectWithReactions(item, includeReactions)
 	}); len(forwarded) > 0 {
 		row["forwarded"] = forwarded
 	}
 	return row
-}
-
-// searchMsgCleanText runs searchMsgText's extraction through chatmsg.CleanText.
-func searchMsgCleanText(m map[string]any) any {
-	if s, ok := searchMsgText(m).(string); ok {
-		return chatmsg.CleanText(s)
-	}
-	return searchMsgText(m)
 }
 
 // searchMsgSender reads a message's sender display name/id, tolerating the
@@ -659,8 +641,8 @@ func searchMsgSender(m map[string]any) any {
 	}
 	for _, key := range []string{"sender", "from", "senderUser"} {
 		if nested, ok := m[key].(map[string]any); ok {
-			for _, k2 := range []string{"name", "nick", "userName", "staffName", "displayName"} {
-				if v := norm(nested[k2]); v != "" {
+			for _, nestedKey := range []string{"name", "nick", "userName", "staffName", "displayName"} {
+				if v := norm(nested[nestedKey]); v != "" {
 					return v
 				}
 			}
@@ -688,39 +670,12 @@ func searchMsgTime(m map[string]any) any {
 	return nil
 }
 
-// searchMsgText reads a message's textual content, tolerating flat text keys and
-// a nested content/text object.
-func searchMsgText(m map[string]any) any {
-	for _, key := range []string{"text", "content", "msgContent", "message", "body"} {
-		if v := searchMsgString(m[key]); v != "" {
-			return v
-		}
-	}
-	for _, key := range []string{"content", "text", "msg"} {
-		if nested, ok := m[key].(map[string]any); ok {
-			for _, k2 := range []string{"text", "content", "richText", "title"} {
-				if v := searchMsgString(nested[k2]); v != "" {
-					return v
-				}
-			}
-		}
-	}
-	return nil
-}
-
 // searchMsgMessageID reads a message's identifier, tolerating the common id keys
 // the gateway may use.
 func searchMsgMessageID(m map[string]any) any {
-	for _, key := range []string{"messageId", "message_id", "msgId", "msg_id", "openMessageId", "id"} {
-		if v := searchMsgString(m[key]); v != "" {
-			return v
-		}
-	}
-	return nil
+	return chatmsg.MessageID(m)
 }
 
-// searchMsgString coerces a scalar JSON value to a trimmed string, returning ""
-// for nil / non-scalar / empty values.
 func searchMsgString(v any) string {
 	switch typed := v.(type) {
 	case string:

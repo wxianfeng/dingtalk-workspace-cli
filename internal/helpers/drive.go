@@ -281,6 +281,85 @@ func parseDriveUploadInfo(text string) (resourceURL, uploadID string, headers ma
 	return
 }
 
+// DriveUploadRequest describes the reusable Drive upload transaction used by
+// the native leaf and the curated +upload shortcut. FilePath must already be
+// resolved and validated by the caller.
+type DriveUploadRequest struct {
+	FilePath      string
+	FileName      string
+	FileSize      int64
+	SpaceID       string
+	ParentID      string
+	OverwriteFile string
+	MIMEType      string
+}
+
+// UploadDriveFileData runs credentials -> OSS PUT -> commit exactly once and
+// returns the parsed commit response without rendering it. Unlike the legacy
+// leaf helper, this path fails when the commit has no non-empty JSON response;
+// the Shortcut can then require terminal success evidence and read back the
+// created node before reporting success.
+func UploadDriveFileData(ctx context.Context, request DriveUploadRequest) (map[string]any, error) {
+	if strings.TrimSpace(request.FilePath) == "" || strings.TrimSpace(request.FileName) == "" || request.FileSize <= 0 {
+		return nil, fmt.Errorf("invalid drive upload request")
+	}
+	step1Args := map[string]any{
+		"fileName": request.FileName,
+		"fileSize": float64(request.FileSize),
+	}
+	if request.SpaceID != "" {
+		step1Args["spaceId"] = request.SpaceID
+	}
+	if request.MIMEType != "" {
+		step1Args["mimeType"] = request.MIMEType
+	}
+	if request.OverwriteFile != "" {
+		step1Args["overwriteFileId"] = request.OverwriteFile
+	} else if request.ParentID != "" {
+		step1Args["parentId"] = request.ParentID
+	}
+
+	credentialText, err := callMCPToolReturnTextOnServer(ctx, "drive", "get_upload_info", step1Args)
+	if err != nil {
+		return nil, err
+	}
+	uploadID, err := driveUploadPut(ctx, credentialText, func(refreshCtx context.Context) (string, error) {
+		return callMCPToolReturnTextOnServer(refreshCtx, "drive", "get_upload_info", step1Args)
+	}, request.FilePath, request.FileSize)
+	if err != nil {
+		return nil, err
+	}
+
+	commitArgs := map[string]any{
+		"fileName": request.FileName,
+		"fileSize": float64(request.FileSize),
+		"uploadId": uploadID,
+	}
+	if request.SpaceID != "" {
+		commitArgs["spaceId"] = request.SpaceID
+	}
+	if request.OverwriteFile != "" {
+		commitArgs["overwriteFileId"] = request.OverwriteFile
+	} else if request.ParentID != "" {
+		commitArgs["parentId"] = request.ParentID
+	}
+	commitText, err := callMCPToolReturnTextOnServer(ctx, "drive", "commit_upload", commitArgs)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(commitText) == "" {
+		return nil, fmt.Errorf("commit_upload returned no business result; remote effect is unknown")
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(commitText), &result); err != nil {
+		return nil, fmt.Errorf("parse commit_upload response: %w", err)
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("commit_upload returned an empty JSON object; remote effect is unknown")
+	}
+	return result, nil
+}
+
 func newDriveCommand() *cobra.Command {
 	// Product-level Agent routing Decl (migrated from selection/drive.json
 	// products.drive). Catalog assembly stamps provenance contract_final.
@@ -3204,6 +3283,7 @@ func newDriveCommand() *cobra.Command {
 		driveListCmd,
 		driveListSpacesCmd,
 		driveInfoCmd,
+		newDriveFileCommentCmd(),
 		driveDownloadCmd,
 		driveDownloadVersionCmd,
 		driveMkdirCmd,
