@@ -324,11 +324,23 @@ func (m FlagMigration) validate() error {
 	if m.Canonical.After.Hidden {
 		return fmt.Errorf("canonical flag must remain visible")
 	}
-	if !m.Canonical.After.Required {
-		return fmt.Errorf("canonical flag must be required after migration")
+	// Requiredness belongs to the one logical parameter. The hidden legacy
+	// spelling must not remain independently required, while the canonical
+	// spelling inherits the exact before-state contract. An already-visible
+	// canonical flag cannot change requiredness; an existing hidden canonical
+	// placeholder may inherit it when promoted to the public spelling.
+	if m.Legacy.After.Required {
+		return fmt.Errorf("legacy compatibility alias must not remain independently required after migration")
 	}
-	if m.Canonical.Before.Present && m.Canonical.Before.Required {
-		return fmt.Errorf("canonical flag must be absent or optional before migration")
+	if m.Legacy.Before.Required != m.Canonical.After.Required {
+		return fmt.Errorf(
+			"flag requiredness must be preserved from legacy before to canonical after",
+		)
+	}
+	if m.Canonical.Before.Present &&
+		!m.Canonical.Before.Hidden &&
+		m.Canonical.Before.Required != m.Canonical.After.Required {
+		return fmt.Errorf("canonical flag requiredness must remain unchanged when already present")
 	}
 	if m.Legacy.After.AliasOf != m.Canonical.Name {
 		return fmt.Errorf(
@@ -682,6 +694,7 @@ func flagMigrationAuthorizesChange(
 			return true
 		}
 		if migration.Canonical.Before.Present &&
+			migration.Canonical.Before.Hidden &&
 			!migration.Canonical.Before.Required &&
 			migration.Canonical.After.Required &&
 			change.Kind == "flag_became_required" {
