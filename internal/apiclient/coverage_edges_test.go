@@ -123,9 +123,12 @@ func TestCrossPlatformCoverageResponseHandlingCoverageEdges(t *testing.T) {
 	if err := handleBinaryResponse(&RawAPIResponse{Header: textHeader, Body: []byte("x")}, opts); err == nil {
 		t.Fatal("binary write to directory should fail")
 	}
-	opts.OutputPath = ""
 	inferred := filepath.Join(dir, "inferred.bin")
-	header := http.Header{"Content-Type": []string{"application/octet-stream"}, "Content-Disposition": []string{`attachment; filename="` + inferred + `"`}}
+	header := http.Header{"Content-Type": []string{"application/octet-stream"}, "Content-Disposition": []string{`attachment; filename="inferred.bin"`}}
+	if got := inferFilename(header); got != "inferred.bin" {
+		t.Fatalf("inferred filename = %q", got)
+	}
+	opts.OutputPath = inferred
 	if err := handleBinaryResponse(&RawAPIResponse{Header: header, Body: []byte("bytes")}, opts); err != nil {
 		t.Fatalf("inferred binary save: %v", err)
 	}
@@ -275,8 +278,12 @@ func TestCrossPlatformCoverageClientAndValidationFailureEdges(t *testing.T) {
 	client.HTTPClient.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(failingReader{err: wantErr})}, nil
 	})
-	if _, err := client.Do(context.Background(), RawAPIRequest{Method: "GET", Path: "/x"}); !errors.Is(err, wantErr) {
-		t.Fatalf("response read error = %v", err)
+	resp, err := client.Do(context.Background(), RawAPIRequest{Method: "GET", Path: "/x"})
+	if err != nil {
+		t.Fatalf("streaming response headers = %v", err)
+	}
+	if err := HandleResponse(resp, ResponseOptions{OutputPath: filepath.Join(t.TempDir(), "out.bin"), Out: io.Discard, ErrOut: io.Discard}); !errors.Is(err, wantErr) {
+		t.Fatalf("response stream error = %v", err)
 	}
 
 	if ValidateTargetHost("http://%zz") == nil {

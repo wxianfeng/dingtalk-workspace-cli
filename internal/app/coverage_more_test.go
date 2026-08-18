@@ -122,22 +122,27 @@ func TestCrossPlatformCoverageRawAPIAndTokenCoverage(t *testing.T) {
 		t.Fatal("missing app credentials succeeded")
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.Path, "fail") {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = io.WriteString(w, `{"error":"bad"}`)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{1}, "hasMore": false})
-	}))
-	defer server.Close()
-	host := strings.TrimPrefix(server.URL, "http://")
-	host = strings.Split(host, ":")[0]
-	apiclient.AllowedHosts[host] = true
-	t.Cleanup(func() { delete(apiclient.AllowedHosts, host) })
+	oldNewRawAPIClient := newRawAPIClient
+	t.Cleanup(func() { newRawAPIClient = oldNewRawAPIClient })
+	newRawAPIClient = func(token, baseURL string) *apiclient.APIClient {
+		client := apiclient.NewClient(token, baseURL)
+		client.HTTPClient.Transport = apiRoundTripper(func(r *http.Request) (*http.Response, error) {
+			status := http.StatusOK
+			body := `{"items":[1],"hasMore":false}`
+			if strings.Contains(r.URL.Path, "fail") {
+				status = http.StatusInternalServerError
+				body = `{"error":"bad"}`
+			}
+			return &http.Response{
+				StatusCode: status,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+			}, nil
+		})
+		return client
+	}
 	gf := &GlobalFlags{Token: "token", DryRun: true, Format: "json", Timeout: 1}
-	af := &apiFlags{baseURL: server.URL}
+	af := &apiFlags{}
 	if err := runAPI(cmd, []string{"GET", "/ok"}, gf, af); err != nil || out.Len() == 0 {
 		t.Fatalf("API dry run = %q, %v", out.String(), err)
 	}
@@ -151,7 +156,7 @@ func TestCrossPlatformCoverageRawAPIAndTokenCoverage(t *testing.T) {
 	if err := runAPI(cmd, []string{"GET", "/ok"}, gf, af); err != nil || out.Len() == 0 {
 		t.Fatalf("API pagination = %q, %v", out.String(), err)
 	}
-	client := apiclient.NewClient("token", server.URL)
+	client := newRawAPIClient("token", "")
 	if err := runPaginated(context.Background(), client, apiclient.RawAPIRequest{Method: "GET", Path: "/fail"}, &apiFlags{}, apiclient.ResponseOptions{Out: io.Discard, ErrOut: io.Discard}); err == nil {
 		t.Fatal("failed pagination succeeded")
 	}

@@ -15,8 +15,16 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/apiclient"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/output"
 )
 
 func TestParseQueryStringToJSON(t *testing.T) {
@@ -62,8 +70,6 @@ func TestParseQueryStringToJSON(t *testing.T) {
 }
 
 func TestRunAPI_QueryStringBlocked(t *testing.T) {
-	t.Parallel()
-
 	gf := &GlobalFlags{}
 	cmd := newAPICommand(gf)
 
@@ -90,8 +96,6 @@ func TestRunAPI_QueryStringBlocked(t *testing.T) {
 }
 
 func TestRunAPI_NoErrorWithoutQueryString(t *testing.T) {
-	t.Parallel()
-
 	gf := &GlobalFlags{}
 	cmd := newAPICommand(gf)
 
@@ -107,4 +111,135 @@ func TestRunAPI_NoErrorWithoutQueryString(t *testing.T) {
 		t.Errorf("should not reject path without query string, got: %s", errMsg)
 	}
 	_ = err
+}
+
+type failingAppTokenGetter struct {
+	called *bool
+}
+
+func (g failingAppTokenGetter) GetToken(context.Context) (string, error) {
+	*g.called = true
+	return "", errors.New("token provider must not run")
+}
+
+func TestRunAPIDryRunHasZeroCredentialFileAndNetworkSideEffects(t *testing.T) {
+	oldProvider := newAppTokenProvider
+	t.Cleanup(func() { newAppTokenProvider = oldProvider })
+	called := false
+	newAppTokenProvider = func(_, _, _ string) appTokenGetter {
+		return failingAppTokenGetter{called: &called}
+	}
+
+	gf := &GlobalFlags{DryRun: true, Token: "must-not-be-shown"}
+	cmd := newAPICommand(gf)
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{
+		"POST", "/v1.0/example/upload",
+		"--params", "@/definitely/missing/params.json",
+		"--data", "@/definitely/missing/body.json",
+		"--file", "media=/definitely/missing/upload.bin",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dry-run should not open deferred inputs: %v\nstderr=%s", err, stderr.String())
+	}
+	if called {
+		t.Fatal("dry-run called AppTokenProvider")
+	}
+	got := stdout.String()
+	if strings.Contains(got, "must-not-be-shown") || !strings.Contains(got, "not opened") || !strings.Contains(got, "Auth:") {
+		t.Fatalf("dry-run preview = %q", got)
+	}
+}
+
+func TestAPIFileFlagCompatibilityAndValidation(t *testing.T) {
+	gf := &GlobalFlags{DryRun: true}
+	cmd := newAPICommand(gf)
+	flag := cmd.Flags().Lookup("file")
+	if flag == nil || flag.DefValue != "" || flag.Hidden {
+		t.Fatalf("--file flag = %#v", flag)
+	}
+
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"GET", "/v1.0/test", "--file", "demo.bin"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "GET") {
+		t.Fatalf("GET --file error = %v", err)
+	}
+
+	cmd = newAPICommand(gf)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"POST", "/v1.0/test", "--params", "-", "--file", "-"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "stdin") {
+		t.Fatalf("stdin conflict error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		gf   *GlobalFlags
+		args []string
+		want string
+	}{
+		{"output", &GlobalFlags{DryRun: true, Output: "out.bin"}, []string{"POST", "/v1.0/test", "--file", "demo.bin"}, "--output"},
+		{"pagination", &GlobalFlags{DryRun: true}, []string{"POST", "/v1.0/test", "--file", "demo.bin", "--page-all"}, "--page-all"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := newAPICommand(tc.gf)
+			command.SetOut(&bytes.Buffer{})
+			command.SetErr(&bytes.Buffer{})
+			command.SetArgs(tc.args)
+			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("file exclusion error = %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveRawAPIExplicitTokenIsTemporaryAppToken(t *testing.T) {
+	got, err := resolveRawAPIToken(context.Background(), " temporary-app-token ")
+	if err != nil || got != "temporary-app-token" {
+		t.Fatalf("explicit App Token = %q, %v", got, err)
+	}
+}
+
+type apiRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f apiRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestRunPaginatedPreservesPagePayloadArray(t *testing.T) {
+	client := apiclient.NewClient("app-token", "")
+	page := 0
+	client.HTTPClient.Transport = apiRoundTripper(func(*http.Request) (*http.Response, error) {
+		page++
+		body := `{"items":[{"id":"2"}],"has_more":false}`
+		if page == 1 {
+			body = `{"items":[{"id":"1"}],"has_more":true,"next_token":"page-2"}`
+		}
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})
+	var out bytes.Buffer
+	err := runPaginated(context.Background(), client, apiclient.RawAPIRequest{
+		Method: http.MethodGet,
+		Path:   "/v1.0/example/resources",
+	}, &apiFlags{pageLimit: 10, pageDelay: 1}, apiclient.ResponseOptions{
+		Format: output.FormatJSON,
+		Out:    &out,
+		ErrOut: io.Discard,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pages []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &pages); err != nil {
+		t.Fatalf("page array output = %s: %v", out.String(), err)
+	}
+	if len(pages) != 2 || pages[0]["next_token"] != "page-2" {
+		t.Fatalf("page payload shape changed: %#v", pages)
+	}
 }

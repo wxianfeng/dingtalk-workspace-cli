@@ -32,6 +32,7 @@ import (
 type apiFlags struct {
 	params    string
 	data      string
+	file      string
 	pageAll   bool
 	pageLimit int
 	pageDelay int
@@ -45,6 +46,8 @@ type appTokenGetter interface {
 var newAppTokenProvider = func(configDir, appKey, appSecret string) appTokenGetter {
 	return &authpkg.AppTokenProvider{ConfigDir: configDir, AppKey: appKey, AppSecret: appSecret}
 }
+
+var newRawAPIClient = apiclient.NewClient
 
 var (
 	apiClientID     = authpkg.ClientID
@@ -104,6 +107,10 @@ oapi.dingtalk.com:
   # Dry-run 预览请求
   dws api GET /v1.0/contact/users/me --dry-run
 
+  # 上传文件（multipart，可附带文本字段）
+  dws api POST /v1.0/example/upload --file media=./demo.png \
+    --data '{"type":"image"}'
+
   # 使用 jq 过滤输出
   dws api GET /v1.0/contact/users/me --jq '.nick'`,
 		Args:              cobra.ExactArgs(2),
@@ -113,8 +120,9 @@ oapi.dingtalk.com:
 		},
 	}
 
-	cmd.Flags().StringVar(&af.params, "params", "", "查询参数 JSON (支持 - 从 stdin 读取)")
-	cmd.Flags().StringVar(&af.data, "data", "", "请求体 JSON (支持 - 从 stdin 读取)")
+	cmd.Flags().StringVar(&af.params, "params", "", "查询参数 JSON (支持 @file 或 - 从 stdin 读取)")
+	cmd.Flags().StringVar(&af.data, "data", "", "请求体 JSON (支持 @file 或 - 从 stdin 读取)")
+	cmd.Flags().StringVar(&af.file, "file", "", "multipart 文件 [field=]path 或 [field=]-")
 	cmd.Flags().BoolVar(&af.pageAll, "page-all", false, "自动遍历所有分页")
 	cmd.Flags().IntVar(&af.pageLimit, "page-limit", apiclient.DefaultPageLimit, "最大翻页数 (0=不限, 默认10, 硬上限500)")
 	cmd.Flags().IntVar(&af.pageDelay, "page-delay", apiclient.DefaultPageDelay, "分页间隔毫秒")
@@ -160,36 +168,93 @@ func runAPI(cmd *cobra.Command, args []string, gf *GlobalFlags, af *apiFlags) er
 	if err := apiclient.ValidateUserInput(af.data, "--data"); err != nil {
 		return apperrors.NewValidation(err.Error())
 	}
+	if err := apiclient.ValidateUserInput(af.file, "--file"); err != nil {
+		return apperrors.NewValidation(err.Error())
+	}
+	fileUpload, err := apiclient.ParseFileSpec(af.file)
+	if err != nil {
+		return apperrors.NewValidation(err.Error())
+	}
 
 	// 4. Validate mutual exclusion.
-	if err := apiclient.ValidateStdinExclusion(af.params, af.data); err != nil {
+	if err := apiclient.ValidateInputStdinExclusion(af.params, af.data, fileUpload); err != nil {
 		return apperrors.NewValidation(err.Error())
 	}
 	if err := apiclient.ValidateFlagExclusion(gf.Output, af.pageAll); err != nil {
 		return apperrors.NewValidation(err.Error())
 	}
+	if fileUpload != nil && method == "GET" {
+		return apperrors.NewValidation("GET 请求不允许使用 --file；允许的方法为 POST、PUT、PATCH、DELETE")
+	}
+	if fileUpload != nil && strings.TrimSpace(gf.Output) != "" {
+		return apperrors.NewValidation("--file 和 --output 不能同时使用")
+	}
+	if fileUpload != nil && af.pageAll {
+		return apperrors.NewValidation("--file 和 --page-all 不能同时使用")
+	}
+	if strings.Contains(path, "#") {
+		return apperrors.NewValidation("API 路径中不允许 fragment (#...)")
+	}
 
-	// 5. Parse --params.
+	// 5. Normalise and validate the target before touching credentials or files.
+	fullURL := apiclient.NormalisePath(path, af.baseURL)
+	if err := apiclient.ValidateTargetHost(fullURL); err != nil {
+		return apperrors.NewValidation(err.Error())
+	}
+
+	// 6. Dry-run never reads stdin/@file/upload bytes, Keychain, or the network.
+	if gf.DryRun {
+		var params map[string]any
+		var body any
+		if !apiclient.IsDeferredInput(af.params) {
+			params, err = apiclient.ParseJSONMap(af.params, "--params", nil)
+			if err != nil {
+				return apperrors.NewValidation(err.Error())
+			}
+		}
+		if !apiclient.IsDeferredInput(af.data) {
+			body, err = apiclient.ParseOptionalBody(method, af.data, nil)
+			if err != nil {
+				return apperrors.NewValidation(err.Error())
+			}
+			if fileUpload != nil && body != nil {
+				if _, ok := body.(map[string]any); !ok {
+					return apperrors.NewValidation("使用 --file 时 --data 必须是 JSON object")
+				}
+			}
+		}
+		req := apiclient.RawAPIRequest{Method: method, Path: path, Params: params, Data: body, File: fileUpload}
+		if apiclient.IsDeferredInput(af.params) {
+			req.ParamsSource = af.params
+		}
+		if apiclient.IsDeferredInput(af.data) {
+			req.DataSource = af.data
+		}
+		return apiclient.PrintDryRun(cmd.OutOrStdout(), req, af.baseURL, "")
+	}
+
+	// 7. Parse --params.
 	params, err := apiclient.ParseJSONMap(af.params, "--params", os.Stdin)
 	if err != nil {
 		return apperrors.NewValidation(err.Error())
 	}
 
-	// 6. Parse --data.
+	// 8. Parse --data.
 	body, err := apiclient.ParseOptionalBody(method, af.data, os.Stdin)
 	if err != nil {
 		return apperrors.NewValidation(err.Error())
 	}
 
-	// 7. Normalise and validate target URL.
-	fullURL := apiclient.NormalisePath(path, af.baseURL)
-
-	// 7b. Security: validate target host is a trusted DingTalk domain.
-	if err := apiclient.ValidateTargetHost(fullURL); err != nil {
-		return apperrors.NewValidation(err.Error())
+	if fileUpload != nil && body != nil {
+		if _, ok := body.(map[string]any); !ok {
+			return apperrors.NewValidation("使用 --file 时 --data 必须是 JSON object")
+		}
+	}
+	if fileUpload != nil && fileUpload.Path == "-" {
+		fileUpload.Reader = os.Stdin
 	}
 
-	// 8. Resolve app-level token (with timeout).
+	// 9. Resolve app-level token (with timeout).
 	tokenCtx, tokenCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer tokenCancel()
 	token, err := resolveRawAPIToken(tokenCtx, gf.Token)
@@ -197,23 +262,19 @@ func runAPI(cmd *cobra.Command, args []string, gf *GlobalFlags, af *apiFlags) er
 		return err
 	}
 
-	// 9. Build request.
+	// 10. Build request.
 	req := apiclient.RawAPIRequest{
 		Method: method,
 		Path:   path,
 		Params: params,
 		Data:   body,
+		File:   fileUpload,
 	}
 
 	baseURL := af.baseURL
 
-	// 10. Dry-run mode.
-	if gf.DryRun {
-		return apiclient.PrintDryRun(cmd.OutOrStdout(), req, baseURL, token)
-	}
-
 	// 11. Create client with timeout.
-	client := apiclient.NewClient(token, baseURL)
+	client := newRawAPIClient(token, baseURL)
 	if gf.Timeout > 0 {
 		client.HTTPClient.Timeout = time.Duration(gf.Timeout) * time.Second
 	}
@@ -293,7 +354,8 @@ func parseQueryStringToJSON(rawQuery string) string {
 // endpoint. The same token works for both api.dingtalk.com and oapi.dingtalk.com.
 // Tokens are cached in keychain and auto-refreshed when expired.
 func resolveRawAPIToken(ctx context.Context, explicitToken string) (string, error) {
-	// Explicit --token flag takes priority (user knows what they're doing).
+	// Hidden compatibility flag: the caller supplies a temporary App Token.
+	// It is never persisted and must not be interpreted as an OAuth User Token.
 	if t := strings.TrimSpace(explicitToken); t != "" {
 		return t, nil
 	}

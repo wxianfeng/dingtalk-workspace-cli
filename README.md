@@ -562,9 +562,9 @@ See `skills/multi/dingtalk-event/SKILL.md` for the Agent workflow and supported 
 </details>
 
 <details>
-<summary><strong>Raw API Access</strong> — call any DingTalk OpenAPI directly</summary>
+<summary><strong>Raw API Access</strong> — call App Token-capable server-side DingTalk OpenAPIs directly</summary>
 
-`dws api` lets you call any DingTalk OpenAPI without an SDK. Tokens are automatically acquired and refreshed.
+`dws api` lets you call server-side DingTalk OpenAPIs that support an internal-app App Token, without an SDK. Tokens are automatically acquired and refreshed.
 
 > **Prerequisite**: Must login with your own app credentials (see [Custom App mode](#getting-started)). Encrypted tokens from MCP default-credential login are not supported for raw API calls.
 
@@ -596,6 +596,15 @@ dws api POST https://oapi.dingtalk.com/topapi/v2/user/get \
 dws api GET /v1.0/microApp/allApps --page-all   # auto-paginate
 dws api GET /v1.0/microApp/allApps --dry-run     # preview request
 dws api GET /v1.0/microApp/allApps --jq '.agentId'  # jq filtering
+
+# Read query/body JSON from files (use - for stdin)
+dws api GET /v1.0/example/resources --params @params.json
+dws api POST /v1.0/example/resources --data @request.json
+
+# Stream one multipart file; top-level --data fields become text form fields
+dws api POST /v1.0/example/files \
+  --file media=./demo.png \
+  --data '{"type":"image"}'
 ```
 
 | Feature | Details |
@@ -604,6 +613,10 @@ dws api GET /v1.0/microApp/allApps --jq '.agentId'  # jq filtering
 | Automatic token management | App-level accessToken is fetched on first call, cached while valid, auto-refreshed on expiry |
 | Domain allowlist | Only `api.dingtalk.com` and `oapi.dingtalk.com` permitted — prevents token leakage |
 | Auto-pagination | `--page-all` iterates all pages. `--page-limit` caps the maximum (default 10, set to 0 for unlimited, hard cap at 500 to prevent infinite loops) |
+| Secure transport | HTTPS/443 and same-origin HTTPS redirects only; bounded JSON/error reads and streamed atomic binary downloads |
+| Agent discovery | When product commands do not cover an API, the bundled misc/mono Skill follows `https://open.dingtalk.com/llms.txt` to the official endpoint docs; raw `api` remains excluded from Agent Schema |
+
+`dws api` automatically uses only an internal-app App Token. It does not read OAuth User Tokens and does not expose `--as user` / `--user`. Prefer an existing DWS product command; use this escape hatch only for an uncovered internal-app server OpenAPI. Review a dry-run and confirm before create, update, delete, revoke, or send operations.
 
 </details>
 
@@ -727,7 +740,7 @@ See [`docs/robot-quickstart.md`](./docs/robot-quickstart.md) for the full 4-step
 | DevDoc | `devdoc` | Search the Open Platform docs and diagnose API errors |
 | AI Search | `aisearch` | Enterprise people search by name / dept / role / duty / supervisor / phone / job-number |
 | Live | `live` | List my live streams |
-| Raw API | `api` | Call any DingTalk OpenAPI directly, with managed app-level token |
+| Raw API | `api` | Call App Token-capable server-side DingTalk OpenAPIs directly, with managed app-level token |
 
 > Full command listing with usage scenarios: [`docs/command-index.md`](./docs/command-index.md). Run `dws --help` for the top-level tree, or `dws <service> --help` for any service's subcommands.
 

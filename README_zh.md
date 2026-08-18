@@ -556,9 +556,9 @@ Agent 工作流和事件参数详见 `skills/multi/dingtalk-event/SKILL.md`。
 </details>
 
 <details>
-<summary><strong>Raw API 调用</strong> — 直接调用钉钉 OpenAPI</summary>
+<summary><strong>Raw API 调用</strong> — 直接调用支持 App Token 的钉钉服务端 OpenAPI</summary>
 
-`dws api` 让你直接调用任意钉钉 OpenAPI，无需 SDK，Token 自动获取和刷新。
+`dws api` 让你直接调用支持企业内部应用 App Token 的钉钉服务端 OpenAPI，无需 SDK，Token 自动获取和刷新。
 
 > **前置条件**：必须使用自有应用凭证登录（见[自建应用模式](#开始使用)）。通过 MCP 默认凭证登录 不支持 raw API 调用。
 
@@ -590,6 +590,15 @@ dws api POST https://oapi.dingtalk.com/topapi/v2/user/get \
 dws api GET /v1.0/microApp/allApps --page-all   # 自动翻页
 dws api GET /v1.0/microApp/allApps --dry-run     # 预览请求
 dws api GET /v1.0/microApp/allApps --jq '.agentId'  # jq 过滤
+
+# 从 JSON 文件读取 query/body（也可用 - 从 stdin 读取）
+dws api GET /v1.0/example/resources --params @params.json
+dws api POST /v1.0/example/resources --data @request.json
+
+# 单文件流式 multipart 上传；--data 顶层字段转为文本 form field
+dws api POST /v1.0/example/files \
+  --file media=./demo.png \
+  --data '{"type":"image"}'
 ```
 
 | 特性 | 说明 |
@@ -598,6 +607,10 @@ dws api GET /v1.0/microApp/allApps --jq '.agentId'  # jq 过滤
 | Token 自动管理 | 首次调用自动获取应用级 accessToken，有效期内缓存，过期自动刷新 |
 | 域名白名单 | 仅允许 `api.dingtalk.com` 和 `oapi.dingtalk.com`，防止 Token 泄露 |
 | 自动分页 | `--page-all` 自动遍历所有分页。`--page-limit` 控制翻页上限（默认 10，设为 0 不限制，硬上限 500 防止死循环） |
+| 安全传输 | 仅允许 HTTPS/443 和同源 HTTPS 重定向；JSON/错误响应有限读取，二进制流式原子下载 |
+| Agent 发现 | 现有产品命令未覆盖时，内置 misc/mono Skill 指导 Agent 从 `https://open.dingtalk.com/llms.txt` 分层定位官方接口；Raw `api` 本身不进入 Agent Schema |
+
+`dws api` 只自动使用企业内部应用的 App Token，不读取 OAuth User Token，也不提供 `--as user` / `--user`。优先使用已有 DWS 产品命令；只有未封装的企业内部应用服务端 OpenAPI 才使用 Raw 逃生舱。写、删、撤销等操作须在 dry-run 核对并确认后执行。
 
 </details>
 
@@ -716,7 +729,7 @@ dws dev connect --channel auto --robot-client-id <id> --robot-client-secret <sec
 | 开发者文档 | `devdoc` | 搜索开放平台文档并排查 API 错误 |
 | AI 搜问 | `aisearch` | 企业人员搜索：按姓名 / 部门 / 角色 / 职责 / 上下级 / 手机号 / 工号 |
 | 直播 | `live` | 查看我的直播列表 |
-| Raw API | `api` | 直接调用任意钉钉 OpenAPI，自动管理应用级 Token |
+| Raw API | `api` | 直接调用支持 App Token 的钉钉服务端 OpenAPI，自动管理应用级 Token |
 
 > 完整命令清单（带描述与使用场景）：[`docs/command-index.md`](./docs/command-index.md)。运行 `dws --help` 查看顶层命令树，或 `dws <service> --help` 查看任一服务的子命令。
 
