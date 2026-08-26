@@ -107,6 +107,12 @@ type Flag struct {
 	// compatibility escape hatch for aliases that were historically public.
 	Aliases        []string `json:"-"`
 	AliasesVisible bool     `json:"-"`
+	// Input declares extra input sources for a string flag beyond the literal
+	// command-line value: "file" enables @path (value replaced by the file
+	// content), "stdin" enables - (value replaced by stdin). "@@value" escapes
+	// to the literal "@value". Resolution happens before Required/Enum/Validate
+	// checks. Empty = flag value only.
+	Input []string `json:"input,omitempty"`
 }
 
 // ConstraintKind is a machine-readable cross-parameter or custom validation
@@ -189,6 +195,11 @@ type Shortcut struct {
 	Tips []string
 	// Hidden hides the command from listings while keeping it invocable.
 	Hidden bool
+	// CompatibilityVisible preserves a historically visible CLI command while
+	// keeping it out of the Agent/public Shortcut catalog. Such a command is
+	// shown only by `dws shortcut list --all`; Availability independently says
+	// whether the historical execution path remains callable.
+	CompatibilityVisible bool
 	// Disposition is the reviewed semantic relation to the Runtime Schema leaf
 	// surface. It determines default Agent discovery independently from live
 	// fixture evidence.

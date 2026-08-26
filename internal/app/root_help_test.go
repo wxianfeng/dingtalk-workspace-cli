@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 
+	authpkg "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/auth"
+	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd/runtimeannotate"
 	apperrors "github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/errors"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/testseam"
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/pkg/edition"
@@ -48,6 +50,49 @@ func TestRootHelpHidesCompatibilityOnlyCommands(t *testing.T) {
 		if !strings.Contains(help, want) {
 			t.Fatalf("root help missing %q:\n%s", want, help)
 		}
+	}
+}
+
+func TestRootHelpShowsFeedbackEntry(t *testing.T) {
+	cmd := NewRootCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("root help: %v\n%s", err, out.String())
+	}
+	help := out.String()
+	// The label stays Chinese regardless of the host locale: the rest of this
+	// listing is hardcoded Chinese, so a translated label would show up as a
+	// lone English line on any host whose LANG is not zh_*.
+	for _, want := range []string{"Feedback:", "使用体验反馈问卷", feedbackFormURL} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("root help missing %q:\n%s", want, help)
+		}
+	}
+	// The form URL is longer than the help rule width; it must stay on a
+	// single unbroken line so terminals keep recognizing it as a hyperlink.
+	if !strings.Contains(help, "\n    "+feedbackFormURL+"\n") {
+		t.Fatalf("feedback URL must occupy one unwrapped line:\n%s", help)
+	}
+}
+
+// The feedback entry is deliberately root-only: this CLI is driven mostly by
+// AI agents, and repeating a survey link in every subcommand help would be
+// pure context noise. Guard the boundary so a future refactor cannot move the
+// rendering into the shared subcommand help path unnoticed.
+func TestSubcommandHelpOmitsFeedbackEntry(t *testing.T) {
+	cmd := NewRootCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"chat", "--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("chat help: %v\n%s", err, out.String())
+	}
+	if help := out.String(); strings.Contains(help, feedbackFormURL) {
+		t.Fatalf("subcommand help must not carry the feedback URL:\n%s", help)
 	}
 }
 
@@ -92,16 +137,18 @@ func TestRootKeepsMainBranchChatCompatibilityCommands(t *testing.T) {
 	}{
 		{args: []string{"chat", "send", "--group", "cid-stable", "--text", "hello"}, hint: "dws chat message send"},
 		{args: []string{"im", "send", "--group", "cid-stable", "--text", "hello"}, hint: "dws chat message send"},
-		{args: []string{"chat", "history", "--group", "cid-stable", "--limit", "20"}, hint: "dws chat message list --group <GROUP_OPEN_CONVERSATION_ID>"},
-		{args: []string{"im", "history", "--group", "cid-stable", "--limit", "20"}, hint: "dws chat message list --group <GROUP_OPEN_CONVERSATION_ID>"},
+		{args: []string{"chat", "history", "--group", "cid-stable", "--limit", "20"}, hint: "dws chat message list --conversation-id <GROUP_OPEN_CONVERSATION_ID>"},
+		{args: []string{"im", "history", "--group", "cid-stable", "--limit", "20"}, hint: "dws chat message list --conversation-id <GROUP_OPEN_CONVERSATION_ID>"},
 	} {
 		command := NewRootCommand()
 		command.SilenceErrors = true
 		command.SilenceUsage = true
 		command.SetArgs(tc.args)
 		err := command.Execute()
-		if err == nil || !strings.Contains(err.Error(), "ambiguous command") || !strings.Contains(err.Error(), tc.hint) {
-			t.Fatalf("dws %s error = %v, want migration hint %q", strings.Join(tc.args, " "), err, tc.hint)
+		var structured *apperrors.Error
+		if !stderrors.As(err, &structured) || structured.Category != apperrors.CategoryValidation ||
+			structured.Reason != "unknown_subcommand" || !strings.Contains(structured.Hint, tc.hint) {
+			t.Fatalf("dws %s error = %#v, want migration hint %q", strings.Join(tc.args, " "), structured, tc.hint)
 		}
 	}
 
@@ -219,7 +266,7 @@ func TestRootChatMediaUploadWithoutAppCredentialsReturnsMigrationValidation(t *t
 	}
 
 	got := output.String() + "\n" + err.Error()
-	for _, want := range []string{"已下线", "chat message send --msg-type file --file-path"} {
+	for _, want := range []string{"已下线", "chat message send --msg-type file --file"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("chat media upload migration output missing %q:\n%s", want, got)
 		}
@@ -369,6 +416,20 @@ func TestChatFileUploadDownlinedButMessageFileSendStays(t *testing.T) {
 			t.Fatalf("chat message send missing --%s", flag)
 		}
 	}
+	idempotencyKey := send.Flags().Lookup("idempotency-key")
+	if idempotencyKey == nil {
+		t.Fatal("chat message send missing --idempotency-key")
+	}
+	legacyUUID := send.Flags().Lookup("uuid")
+	if legacyUUID == nil || !legacyUUID.Hidden {
+		t.Fatalf("chat message send --uuid hidden = %#v, want hidden compatibility flag", legacyUUID)
+	}
+	if got := legacyUUID.Annotations[runtimeannotate.AnnotationFlagAliasOf]; len(got) != 1 || got[0] != "idempotency-key" {
+		t.Fatalf("chat message send --uuid alias_of = %#v, want idempotency-key", got)
+	}
+	if got := legacyUUID.Annotations[runtimeannotate.AnnotationFlagAliasOrigin]; len(got) != 1 || got[0] != runtimeannotate.FlagAliasOriginCorecmdV1 {
+		t.Fatalf("chat message send --uuid alias_origin = %#v, want %s", got, runtimeannotate.FlagAliasOriginCorecmdV1)
+	}
 
 	got, err := executeRootCaptureStdout(t, []string{
 		"chat", "file", "upload",
@@ -380,7 +441,7 @@ func TestChatFileUploadDownlinedButMessageFileSendStays(t *testing.T) {
 		t.Fatalf("chat file upload error = nil, want downline error\n%s", got)
 	}
 	got = got + "\n" + err.Error()
-	for _, want := range []string{"已下线", "upload_conversation_file_by_url", "chat message send --msg-type file --file-path"} {
+	for _, want := range []string{"已下线", "upload_conversation_file_by_url", "chat message send --msg-type file --file"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("chat file upload output missing %q:\n%s", want, got)
 		}
@@ -399,6 +460,53 @@ func TestCalendarEventListDryRunPreviewsOnly(t *testing.T) {
 	for _, want := range []string{"list_calendar_events", "startTime", "endTime"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("calendar dry-run output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCalendarEventShareInfoDryRunPreviewsOnly(t *testing.T) {
+	got, err := executeRootCaptureStdout(t, []string{
+		"--dry-run", "calendar", "event", "share-info",
+		"--id", "EVT_001",
+		"--language", "zh-CN",
+		"--calendar-id", "primary",
+	})
+	if err != nil {
+		t.Fatalf("calendar event share-info --dry-run error = %v\n%s", err, got)
+	}
+	for _, want := range []string{"get_event_share_info", "eventId", "EVT_001", "zh-CN", "primary"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("calendar event share-info dry-run output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCalendarEventShareInfoRequiresEventID(t *testing.T) {
+	got, err := executeRootCaptureStdout(t, []string{
+		"--dry-run", "calendar", "event", "share-info",
+	})
+	if err == nil {
+		t.Fatalf("calendar event share-info without --id: expected error, got nil\n%s", got)
+	}
+	if strings.Contains(got, "\"executed\": true") {
+		t.Fatalf("share-info without --id must not execute:\n%s", got)
+	}
+}
+
+func TestCalendarEventShareInfoOmitsOptionalArgs(t *testing.T) {
+	got, err := executeRootCaptureStdout(t, []string{
+		"--dry-run", "calendar", "event", "share-info",
+		"--id", "EVT_001",
+	})
+	if err != nil {
+		t.Fatalf("calendar event share-info --dry-run with only --id error = %v\n%s", err, got)
+	}
+	if !strings.Contains(got, "\"eventId\"") {
+		t.Fatalf("calendar event share-info dry-run output missing eventId:\n%s", got)
+	}
+	for _, unwanted := range []string{"\"calendarId\"", "\"language\""} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("calendar event share-info dry-run with only --id should not contain %q:\n%s", unwanted, got)
 		}
 	}
 }
@@ -470,6 +578,80 @@ func TestInjectStaticServersMergesStaticAndSupplementServers(t *testing.T) {
 		if !ok || got != tc.endpoint {
 			t.Fatalf("directRuntimeEndpoint(%q) = %q, %v; want %q, true", tc.productID, got, ok, tc.endpoint)
 		}
+	}
+}
+
+func TestCrossPlatformCoverageStaticDingTalkEndpointsFollowConfiguredMCPBaseURL(t *testing.T) {
+	previous := edition.Get()
+	defer edition.Override(previous)
+	defer SetDynamicServers(nil)
+
+	configDir := t.TempDir()
+	t.Setenv("DWS_CONFIG_DIR", configDir)
+	if err := os.WriteFile(filepath.Join(configDir, "mcp_url"), []byte("https://pre-mcp.dingtalk.io\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(mcp_url) error = %v", err)
+	}
+
+	edition.Override(&edition.Hooks{
+		Name: "test",
+		StaticServers: func() []edition.ServerInfo {
+			return []edition.ServerInfo{{
+				ID:       "contact",
+				Name:     "Contact",
+				Endpoint: "https://mcp-gw.dingtalk.com/server/contact?key=abc",
+				Prefixes: []string{"user"},
+			}}
+		},
+	})
+
+	injectStaticServers()
+
+	for _, productID := range []string{"contact", "user"} {
+		got, ok := directRuntimeEndpoint(productID, "")
+		want := "https://pre-mcp-gw.dingtalk.io/server/contact?key=abc"
+		if !ok || got != want {
+			t.Fatalf("directRuntimeEndpoint(%q) = %q, %v; want %q, true", productID, got, ok, want)
+		}
+	}
+}
+
+func TestCrossPlatformCoverageDingTalkEndpointsFollowSelectedTokenRegion(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("DWS_CONFIG_DIR", configDir)
+	mcpURLPath := filepath.Join(configDir, "mcp_url")
+
+	if err := os.WriteFile(mcpURLPath, []byte("https://pre-mcp.dingtalk.io\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(mcp_url) error = %v", err)
+	}
+	endpoint := "https://pre-mcp-gw.dingtalk.io/server/contact?key=abc"
+	if got, want := activeDingTalkGatewayEndpointForLoginRegion(endpoint, authpkg.LoginRegionDefault), "https://pre-mcp-gw.dingtalk.com/server/contact?key=abc"; got != want {
+		t.Fatalf("domestic profile endpoint = %q, want %q", got, want)
+	}
+	if got := activeDingTalkGatewayEndpointForLoginRegion(endpoint, authpkg.LoginRegionInternational); got != endpoint {
+		t.Fatalf("international profile endpoint = %q, want %q", got, endpoint)
+	}
+
+	if err := os.WriteFile(mcpURLPath, []byte("https://mcp.dingtalk.com\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(mcp_url) error = %v", err)
+	}
+	if got, want := activeDingTalkGatewayEndpointForLoginRegion("https://mcp-gw.dingtalk.com/server/contact", authpkg.LoginRegionInternational), "https://mcp-gw.dingtalk.io/server/contact"; got != want {
+		t.Fatalf("international profile endpoint from domestic config = %q, want %q", got, want)
+	}
+}
+
+func TestCrossPlatformCoverageDingTalkEndpointUsesLoginScopedMCPOverride(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("DWS_CONFIG_DIR", configDir)
+	restore := authpkg.PushMCPBaseURLOverride("https://pre-mcp.dingtalk.io")
+	defer restore()
+
+	got := activeDingTalkGatewayEndpointForLoginRegion(
+		"https://mcp-gw.dingtalk.com/server/contact",
+		authpkg.LoginRegionDefault,
+	)
+	want := "https://pre-mcp-gw.dingtalk.io/server/contact"
+	if got != want {
+		t.Fatalf("login-scoped endpoint = %q, want %q", got, want)
 	}
 }
 

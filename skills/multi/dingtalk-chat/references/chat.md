@@ -19,9 +19,12 @@
 | 用户终点 | 返回入口 |
 |---|---|
 | 姓名/群名简单发送、文件、Bot、Webhook、复杂 @ | 根 Skill Golden Route |
-| 单会话消息、跨会话搜索、资源下载 | [消息任务级流程](01-messaging.md) |
-| 引用、转发、卡片、reaction、Pin/Top/Favorite | [chat-message](chat/chat-message.md) |
-| 基础建群、成员、公告、管理员和群设置 | [chat-group](chat/chat-group.md) |
+| 消息读取、条件搜索、@我、Favorite/reaction 查询和批量详情 | [message-query](chat/message-query.md) |
+| 编辑、撤回、引用、转发、reaction/Pin/Top/Favorite 写入 | [message-actions](chat/message-actions.md) |
+| 位置、名片、资源下载和特殊媒体 fallback | [message-media](chat/message-media.md) |
+| 群列表、群搜索、成员读取、Bot 列表和邀请链接 | [group-discovery](chat/group-discovery.md) |
+| 建群、改群、成员写入、管理员、禁言、公告和群设置 | [group-admin](chat/group-admin.md) |
+| 跨步骤消息/群组合流程 | [消息任务级流程](01-messaging.md) |
 | Bot 搜索、进群和撤回 | [chat-bot](chat/chat-bot.md) |
 | 会话置顶、状态和分组 | [chat-conversation](chat/chat-conversation.md) |
 | 相邻低频意图仍需消歧 | [intent-guide](intent-guide.md) |
@@ -54,8 +57,10 @@
 | `message add-emoji` / `remove-emoji` | 默认 emoji reaction |
 | `message create-text-emotion` / `add-text-emotion` / `update-text-emotion` / `remove-text-emotion` | 文字表情 |
 | `message list-emotion-replies` | 批量 reaction/文字回应 |
+| `emotion list` / `send` / `favorite` | 当前用户个人收藏表情列表、发送和新增 |
 
 Favorite、消息 Pin、消息 Top 与会话 Top 是四种对象，不能互换。
+个人收藏表情与消息 reaction/文字回应不同；发送收藏表情使用 `chat emotion send`，给已有消息贴表情使用 `chat message add-emoji` 或 `chat message add-text-emotion`。
 
 ## 群与成员底层能力
 
@@ -89,7 +94,7 @@ Favorite、消息 Pin、消息 Top 与会话 Top 是四种对象，不能互换�
 |---|---|
 | `chat bot search` | 搜索当前用户创建的机器人并取得 `robotCode` |
 | `chat bot find` | 搜索可用机器人并取得机器人 `openDingTalkId` |
-| `chat message send-by-bot` | `+messages-send --as bot` 未发布的真实底层字段 |
+| `chat message send-by-bot` | `+messages-send --as bot` 未发布的真实底层字段，包括机器人群聊引用回复的 `--reply` / `--ref-sender` |
 | `chat message recall-by-bot` | 使用 `processQueryKey` 撤回机器人消息 |
 | `chat message send-by-webhook` | `+messages-send --as webhook` 未发布的真实底层字段 |
 
@@ -121,7 +126,7 @@ Favorite、消息 Pin、消息 Top 与会话 Top 是四种对象，不能互换�
 | `+messages-send` | `openTaskId` 查询投递状态；它不是消息 ID |
 | `+chat-messages` / `+search-msg` / `+messages-mget` | 回复、转发、撤回、资源操作使用的真实消息/会话/thread ID |
 | `chat bot search` | `robotCode`；不能当机器人 `openDingTalkId` |
-| `chat message send-by-bot` | `processQueryKey`，仅用于机器人撤回 |
+| `chat message send-by-bot` | `processQueryKey` 用于机器人撤回；群聊引用回复还需消息查询返回的 `openMessageId` 与原发送者 `openDingTalkId` |
 
 显式稳定 ID 当前不携带可验证的 profile provenance；调用方必须保证来源，不得宣称所有
 跨 profile 误用都会在本地写入前被拦截。

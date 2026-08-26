@@ -107,7 +107,12 @@ func TestOpenSupplementServersIncludesMCPMeta(t *testing.T) {
 	servers := openSupplementServers()
 	foundMCPMeta := false
 	foundWhiteboard := false
+	foundRecruit := false
 	for _, server := range servers {
+		if server.ID == "recruit" {
+			foundRecruit = server.Endpoint == "https://mcp-gw.dingtalk.com/server/f69b54ada16c57b603c0e5e1c36f464ba73dcee28d64bb701ff2682c259c0cff" &&
+				len(server.Prefixes) == 2 && server.Prefixes[0] == "recruit" && server.Prefixes[1] == "job"
+		}
 		if server.ID == "whiteboard" {
 			foundWhiteboard = server.Endpoint == "https://mcp-gw.dingtalk.com/server/whiteboard"
 		}
@@ -127,5 +132,29 @@ func TestOpenSupplementServersIncludesMCPMeta(t *testing.T) {
 	}
 	if !foundWhiteboard {
 		t.Fatal("openSupplementServers() missing helper-only whiteboard endpoint")
+	}
+	if !foundRecruit {
+		t.Fatal("openSupplementServers() missing explicitly wired recruit endpoint")
+	}
+}
+
+func TestCrossPlatformCoverageOpenSupplementServersExcludesRetiredEduEndpoints(t *testing.T) {
+	retiredProducts := map[string]bool{
+		"edu-contact":     true,
+		"edu-group":       true,
+		"edu-app":         true,
+		"edu-familygroup": true,
+		"college-contact": true,
+	}
+
+	for _, server := range openSupplementServers() {
+		if retiredProducts[server.ID] {
+			t.Errorf("openSupplementServers() still exposes retired endpoint %q", server.ID)
+		}
+		for _, prefix := range server.Prefixes {
+			if retiredProducts[prefix] {
+				t.Errorf("openSupplementServers() endpoint %q still routes retired prefix %q", server.ID, prefix)
+			}
+		}
 	}
 }

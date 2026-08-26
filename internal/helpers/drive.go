@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -375,12 +376,12 @@ func newDriveCommand() *cobra.Command {
 			},
 		},
 	})
-	driveCmd := &cobra.Command{
+	driveCmd := newGroupCommand(&cobra.Command{
 		Use:   "drive",
 		Short: "钉盘文件管理",
 		Long:  `钉盘：列出文件/文件夹、获取元数据和统计信息、创建快捷方式、下载、上传及管理文件。`,
 		RunE:  groupRunE,
-	}
+	})
 
 	driveListCmd := &cobra.Command{
 		Use:   "list",
@@ -411,6 +412,13 @@ func newDriveCommand() *cobra.Command {
 				if cmd.Flags().Changed("versions") {
 					return &CLIError{Code: CodeInvalidParam, Message: "--latest 不能与 --versions 同时使用"}
 				}
+			}
+
+			// --type/--start/--end 客户端过滤：激活即切 BFS 全量拉取后筛（两路由统一）；
+			// 未启用返回零值，存量分支字节级不变。互斥/非法值/start>end 在此拒绝。
+			filter, err := parseDriveListFilter(cmd)
+			if err != nil {
+				return err
 			}
 
 			// --versions 模式：列出文件历史版本（仅普通文件）
@@ -454,7 +462,8 @@ func newDriveCommand() *cobra.Command {
 			if workspaceID != "" {
 				// depth>1 时 --pattern 放开（先递归后过滤）；--order-by/--space-id/--thumbnail
 				// 知识库无对应参数，静默忽略。
-				if depth > 1 || latest > 0 {
+				// filter 激活时 depth==1 也走 BFS 退化态（全量拉取→CLI 侧筛）。
+				if depth > 1 || latest > 0 || filter.active() {
 					quiet, _ := cmd.Flags().GetBool("quiet")
 					baseArgs := map[string]any{"workspaceId": workspaceID}
 					rootFolder := docFolderFlag(cmd, "node", "file-id")
@@ -463,7 +472,7 @@ func newDriveCommand() *cobra.Command {
 							return err
 						}
 					}
-					return runDriveListDepth(cmd, newDocDepthRoute(), baseArgs, rootFolder, depth, pattern, quiet, latest)
+					return runDriveListDepth(cmd, newDocDepthRoute(), baseArgs, rootFolder, depth, pattern, quiet, latest, filter)
 				}
 				if pattern != "" {
 					return &CLIError{
@@ -487,7 +496,9 @@ func newDriveCommand() *cobra.Command {
 				return callMCPToolOnServer("doc", "list_nodes", toolArgs)
 			}
 
-			if depth > 1 {
+			// 钉盘：filter 激活即 depth=1 单层退化态（全量翻完当前目录后 CLI 侧筛）；
+			// filter+latest 单层同走 BFS（先筛后排，不走 runDriveListLatest 凑够即停）。
+			if depth > 1 || filter.active() {
 				quiet, _ := cmd.Flags().GetBool("quiet")
 				baseArgs := map[string]any{}
 				if v, _ := cmd.Flags().GetString("space-id"); v != "" {
@@ -508,7 +519,7 @@ func newDriveCommand() *cobra.Command {
 						return err
 					}
 				}
-				return runDriveListDepth(cmd, newDrivePanDepthRoute(), baseArgs, rootFolder, depth, pattern, quiet, latest)
+				return runDriveListDepth(cmd, newDrivePanDepthRoute(), baseArgs, rootFolder, depth, pattern, quiet, latest, filter)
 			}
 
 			// 默认路由：钉盘文件列表
@@ -563,6 +574,11 @@ func newDriveCommand() *cobra.Command {
 			if v, _ := cmd.Flags().GetBool("thumbnail"); v {
 				argsMap["withThumbnail"] = true
 			}
+			// --pattern 页内过滤（现状缺口附带修复：透传即打印无法夹过滤，取回解析后筛）；
+			// 不带 pattern 时保持 callMCPTool 纯透传，存量行为不变。
+			if pattern != "" {
+				return callDriveListPageWithPattern(argsMap, pattern)
+			}
 			return callMCPTool("list_files", argsMap)
 		},
 	}
@@ -591,11 +607,13 @@ func newDriveCommand() *cobra.Command {
 					"用户要浏览「我的文件」/钉盘/网盘某目录下有哪些文件或文件夹时",
 					"已知父文件夹 dentryUuid，要列出其子项以便继续 download/copy/move 时",
 					"传 --workspace 时要列出文档空间/知识库根或子目录（与 wiki node list 场景重叠时，用户说钉盘/我的文件优先本命令）",
+					"要在已知目录内按类型/修改时间做无关键词筛选时：--type file --start 7d（钉盘与知识库路由均可，CLI 侧过滤）",
 				},
 				AvoidWhen: []string{
 					"只记得关键词、不知道所在目录时改用 dws drive search",
 					"明确要在某个知识库内按目录浏览且已有 workspaceId 时可用 dws wiki node list",
 					"要找最近打开/编辑过的文档改用 dws drive recent",
+					"带关键词的过滤改用 dws drive search（--extensions/--modified-from 等已可用）",
 				},
 				Examples: []string{
 					"dws drive list --limit 20 --format json",
@@ -1209,8 +1227,11 @@ func newDriveCommand() *cobra.Command {
 	driveListCmd.Flags().String("node", "", "文件 ID (dentryUuid) 或 URL (--versions 模式下必填)")
 	driveListCmd.Flags().String("pattern", "", "按名称通配过滤结果，如 \"*日报*\" (客户端过滤) (可选)")
 	driveListCmd.Flags().Int("depth", 1, "递归列出子目录层级，默认 1(仅当前层)，最大 5；与 --cursor/--limit 互斥；与 --workspace 组合时走知识库递归 (可选)")
-	driveListCmd.Flags().Int("latest", 0, "按修改时间取最新 N 个文件（1~50）；与 --pattern 组合时表示名称匹配的文件中最新 N 个；可与 --workspace/--depth 组合；与 --order-by/--order/--limit/--cursor 互斥 (可选)")
+	driveListCmd.Flags().Int("latest", 0, "按修改时间取最新 N 个文件（1~50）；与 --pattern 组合时表示名称匹配的文件中最新 N 个；可与 --workspace/--depth 组合；与 --order-by/--order/--limit/--cursor 互斥；扫描触发 2000 条上限或途中目录读取失败时报错，不产出不完整的 Top-N (可选)")
 	driveListCmd.Flags().Bool("quiet", false, "关闭递归进度输出(stderr)，不影响 stdout JSON (--depth>1 或 --latest 多页扫描时有效) (可选)")
+	driveListCmd.Flags().String("type", "", "按节点类型过滤: file|folder（客户端过滤：全量扫描后筛，钉盘/知识库均可用；与 --versions/--cursor/--order-by/--order/--limit 互斥）(可选)")
+	driveListCmd.Flags().String("start", "", "按修改时间过滤·起始: 相对时间如 24h/7d/2w、RFC3339、YYYY-MM-DD（客户端过滤，互斥同 --type）(可选)")
+	driveListCmd.Flags().String("end", "", "按修改时间过滤·截止: 语法同 --start（客户端过滤，互斥同 --type）(可选)")
 
 	driveInfoCmd.Flags().String("node", "", "节点 ID (dentryUuid) (必填)")
 	driveInfoCmd.Flags().String("space-id", "", "节点所属空间 ID (可选)")
@@ -1691,7 +1712,8 @@ func newDriveCommand() *cobra.Command {
 			if v := flagOrFallback(cmd, "workspace", "workspace-id"); v != "" {
 				toolArgs["workspaceId"] = v
 			}
-			return callMCPToolOnServer("doc", "copy_document", toolArgs)
+			// 服务端可能返回异步任务（taskId），此时自动轮询 query_task 直至终态。
+			return runNodeTransferWithAsyncPoll(cmd.Context(), "copy_document", toolArgs)
 		},
 	}
 	DeclareLeafMetadata(driveCopyCmd, LeafSpec{
@@ -1768,7 +1790,8 @@ func newDriveCommand() *cobra.Command {
 			if v := flagOrFallback(cmd, "workspace", "workspace-id"); v != "" {
 				toolArgs["workspaceId"] = v
 			}
-			return callMCPToolOnServer("doc", "move_document", toolArgs)
+			// 服务端可能返回异步任务（taskId），此时自动轮询 query_task 直至终态。
+			return runNodeTransferWithAsyncPoll(cmd.Context(), "move_document", toolArgs)
 		},
 	}
 	DeclareLeafMetadata(driveMoveCmd, LeafSpec{
@@ -1939,6 +1962,280 @@ func newDriveCommand() *cobra.Command {
 	})
 	driveStatsCmd.Flags().String("node", "", "节点 ID 或文档 URL (必填)")
 
+	// ── drive quota (查询企业存储容量) ──
+	driveQuotaCmd := &cobra.Command{
+		Use:   "quota",
+		Short: "查询企业存储容量",
+		Long: `查询企业存储容量，支持三个维度：
+  不传参数               → 企业级总用量
+  --app <appId>         → 应用级用量
+  --space <spaceId>     → 空间级用量
+--app 与 --space 互斥。`,
+		Example: `  dws drive quota
+  dws drive quota --app <appId>
+  dws drive quota --space <spaceId>
+  dws drive quota apps`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			appID, _ := cmd.Flags().GetString("app")
+			spaceID, _ := cmd.Flags().GetString("space")
+			toolArgs := map[string]any{}
+			if appID != "" {
+				toolArgs["appId"] = appID
+			}
+			if spaceID != "" {
+				toolArgs["spaceId"] = spaceID
+			}
+			return callMCPTool("get_storage_quota", toolArgs)
+		},
+	}
+	driveQuotaCmd.Flags().String("app", "", "应用 ID (可选，与 --space 互斥)")
+	driveQuotaCmd.Flags().String("space", "", "空间 ID (可选，与 --app 互斥)")
+	driveQuotaCmd.MarkFlagsMutuallyExclusive("app", "space")
+	DeclareLeafMetadata(driveQuotaCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "get_storage_quota",
+				CanonicalPath:  "drive.get_storage_quota",
+				CLIPath:        "drive quota",
+				PrimaryCLIPath: "drive quota",
+			},
+			Description: "查询企业存储容量（企业级/应用级/空间级）",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "drive", RPCName: "get_storage_quota"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "查询企业存储容量（企业级/应用级/空间级）",
+				UseWhen: []string{
+					"用户问钉盘/企业盘存储容量、剩余空间时（企业级：不传参数）",
+					"查询某个应用的存储用量时（--app）",
+					"查询某个空间的存储用量时（--space）",
+				},
+				AvoidWhen: []string{
+					"查应用列表及应用用量时用 dws drive quota apps",
+					"查个人/单文件大小时用 drive info / drive stats",
+				},
+				Examples: []string{
+					"dws drive quota --format json",
+					"dws drive quota --app <APP_ID> --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "app", Property: "appId"},
+				{Name: "space", Property: "spaceId"},
+			},
+		},
+	})
+
+	// ── drive quota apps (查询应用级存储用量列表) ──
+	driveQuotaAppsCmd := &cobra.Command{
+		Use:   "apps",
+		Short: "查询应用级存储用量列表",
+		Long: `查询企业下各应用的存储容量使用情况，返回应用列表及汇总用量。
+支持分页和排序。`,
+		Example: `  dws drive quota apps
+  dws drive quota apps --limit 50
+  dws drive quota apps --cursor <nextToken>
+  dws drive quota apps --order-by used-quota --order desc`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// fail-fast 参数校验：无效值直接报错（帮助文本已声明合法值域），
+			// 绝不静默丢弃或改写。--limit 用 Changed 区分显式传值与默认 20。
+			if cmd.Flags().Changed("limit") {
+				if v, _ := cmd.Flags().GetInt("limit"); v <= 0 || v > 50 {
+					return fmt.Errorf("--limit 值无效：%d，必须为 1-50 之间的整数", v)
+				}
+			}
+			if v, _ := cmd.Flags().GetString("order-by"); v != "" && mapOrderByToCamelCase(v) == "" {
+				return fmt.Errorf("--order-by 值无效：%s，必须为 used-quota、standard-used-quota 或 exclusive-used-quota", v)
+			}
+			if v, _ := cmd.Flags().GetString("order"); v != "" && v != "asc" && v != "desc" {
+				return fmt.Errorf("--order 值无效：%s，必须为 asc 或 desc", v)
+			}
+
+			toolArgs := map[string]any{}
+			if v, _ := cmd.Flags().GetInt("limit"); v > 0 {
+				toolArgs["maxResults"] = float64(v)
+			}
+			if v := flagOrFallback(cmd, "cursor", "next-token"); v != "" {
+				toolArgs["nextToken"] = v
+			}
+			if v, _ := cmd.Flags().GetString("order-by"); v != "" {
+				mapped := mapOrderByToCamelCase(v)
+				if mapped != "" {
+					toolArgs["orderBy"] = mapped
+				}
+			}
+			if v, _ := cmd.Flags().GetString("order"); v != "" {
+				toolArgs["order"] = v
+			}
+			return callMCPTool("list_storage_apps", toolArgs)
+		},
+	}
+	driveQuotaAppsCmd.Flags().Int("limit", 20, "每页返回数量，默认 20，最大 50")
+	driveQuotaAppsCmd.Flags().String("cursor", "", "分页游标，从上次返回的 nextToken 获取 (可选)")
+	driveQuotaAppsCmd.Flags().String("order-by", "", "排序字段：used-quota(总用量)/standard-used-quota(标准存储)/exclusive-used-quota(专属存储) (可选)")
+	driveQuotaAppsCmd.Flags().String("order", "", "排序方向：asc/desc (可选，默认 desc)")
+	DeclareLeafMetadata(driveQuotaAppsCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "list_storage_apps",
+				CanonicalPath:  "drive.list_storage_apps",
+				CLIPath:        "drive quota apps",
+				PrimaryCLIPath: "drive quota apps",
+			},
+			Description: "查询企业下各应用的存储用量列表（支持分页/排序）",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "drive", RPCName: "list_storage_apps"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "查询企业下各应用的存储用量列表（支持分页/排序）",
+				UseWhen: []string{
+					"盘点企业内哪些应用占用了钉盘存储、按用量排序找大户时",
+					"翻页拉全应用用量列表时（--cursor 传上次 nextToken）",
+				},
+				AvoidWhen: []string{
+					"只查单个应用的总量时用 dws drive quota --app",
+				},
+				Examples: []string{
+					"dws drive quota apps --limit 50 --format json",
+					"dws drive quota apps --order-by used-quota --order desc --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "cursor", Property: "nextToken"},
+				{Name: "limit", Property: "maxResults"},
+				{Name: "order", Property: "order"},
+				{Name: "order-by", Property: "orderBy"},
+			},
+		},
+	})
+
+	driveQuotaCmd.AddCommand(driveQuotaAppsCmd)
+	newHybridGroupCommand(driveQuotaCmd)
+
+	// ── drive task 子命令组（异步任务统一查询入口）──
+	taskCmd := &cobra.Command{
+		Use:   "task",
+		Short: "异步任务状态查询（统一入口）",
+		Long: `查询异步任务（导出/导入/复制/移动）的执行状态和结果，作为 drive 域异步任务的统一查询入口。
+
+场景：
+  - 导出任务超时或中断后，手动查询导出结果
+  - 导入任务查询文件转换状态
+  - 复制/移动异步任务超时后，手动查询任务状态
+
+区分：
+  dws drive task get   — 统一查询入口，支持 export/import/copy/move 多类型，返回归一化 TaskResult
+  dws doc export get   — 产品级入口，仅支持导出任务，直接透传 MCP 原始响应`,
+		Example: `  dws drive task get --type export --id <taskId>
+  dws drive task get --type import --id <taskId>
+  dws drive task get --type copy --id <taskId>
+  dws drive task get --type move --id <taskId>`,
+		RunE: groupRunE,
+	}
+
+	taskGetCmd := &cobra.Command{
+		Use:   "get",
+		Short: "查询单个异步任务状态",
+		Long: `根据任务类型和 ID 查询单个异步任务的当前状态和结果。
+
+任务状态：
+  PENDING         排队中
+  PROCESSING      处理中
+  SUCCESS         任务成功，导出类型返回 resultUrl（下载链接）
+  PARTIAL_FAILED  部分失败（终态，常见于批量复制/移动），返回部分失败说明
+  FAILED          任务失败，返回错误信息
+  TIMEOUT         任务超时`,
+		Example: `  dws drive task get --type export --id <taskId>
+  dws drive task get --type import --id <taskId>
+  dws drive task get --type copy --id <taskId>
+  dws drive task get --type move --id <taskId>`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateRequiredFlags(cmd, "type", "id"); err != nil {
+				return err
+			}
+			taskID := mustGetFlag(cmd, "id")
+			taskType := mustGetFlag(cmd, "type")
+
+			switch taskType {
+			case "export", "import", "copy", "move":
+			default:
+				return fmt.Errorf("不支持的任务类型: %s，当前支持: export|import|copy|move", taskType)
+			}
+
+			if deps.Caller.DryRun() {
+				deps.Out.PrintKeyValue("操作", "查询异步任务")
+				deps.Out.PrintKeyValue("类型", taskType)
+				deps.Out.PrintKeyValue("ID", taskID)
+				return nil
+			}
+
+			// query_task 工具注册在 drive (dingpan) MCP server 上，需显式路由。
+			result, err := QueryTask(cmd.Context(), taskID, taskType)
+			if err != nil {
+				return err
+			}
+			return deps.Out.PrintJSON(result)
+		},
+	}
+	taskGetCmd.Flags().String("type", "", "任务类型: export|import|copy|move (必填)")
+	taskGetCmd.Flags().String("id", "", "任务 ID (必填)")
+	DeclareLeafMetadata(taskGetCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "query_task",
+				CanonicalPath:  "drive.query_task",
+				CLIPath:        "drive task get",
+				PrimaryCLIPath: "drive task get",
+			},
+			Description: "统一查询异步任务（export/import/copy/move）状态，返回归一化 TaskResult",
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "drive", RPCName: "query_task"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "统一查询异步任务（export/import/copy/move）状态，返回归一化 TaskResult",
+				UseWhen: []string{
+					"导出/导入任务超时或中断后手动查询结果时",
+					"复制/移动异步任务超时后手动查询状态时",
+				},
+				AvoidWhen: []string{
+					"仅在 doc 上下文查导出任务且需要 MCP 原始响应时用 dws doc export get",
+					"任务尚未提交（没有 taskId）时先执行对应提交命令",
+				},
+				Examples: []string{
+					"dws drive task get --type export --id <TASK_ID> --format json",
+					"dws drive task get --type copy --id <TASK_ID> --format json",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "id", Property: "taskId", Required: boolPtr(true)},
+				{Name: "type", Property: "taskType", Required: boolPtr(true)},
+			},
+		},
+	})
+	taskCmd.AddCommand(taskGetCmd)
+	newGroupCommand(taskCmd)
+
 	driveShortcutCmd := &cobra.Command{
 		Use:   "shortcut",
 		Short: "为节点创建快捷方式",
@@ -2010,39 +2307,67 @@ func newDriveCommand() *cobra.Command {
 	driveShortcutCmd.Flags().String("workspace", "", "目标知识库 ID (可选)")
 
 	// ── drive permission (文档节点权限管理) ──
-	drivePermissionCmd := &cobra.Command{
+	drivePermissionCmd := newGroupCommand(&cobra.Command{
 		Use:     "permission",
 		Aliases: []string{"perm"},
 		Short:   "文档节点权限管理",
 		Long: `管理文档空间节点的协作权限：添加、更新、查询、移除协作者。
 注意: 仅适用于文档空间节点，不适用于钉盘文件。`,
 		RunE: groupRunE,
-	}
+	})
 
 	drivePermAddCmd := &cobra.Command{
 		Use:   "add",
 		Short: "添加协作者",
+		Args:  cobra.NoArgs,
 		Long: `为文档空间节点添加协作成员并授予指定角色。
 
-支持的角色 (--role): MANAGER / EDITOR / DOWNLOADER / READER`,
+两种传参方式（互斥）：
+  旧格式：--users 传入逗号分隔的 userId 列表 + --role 指定统一角色（仅 USER 类型）
+  新格式：--members 传入 JSON 数组，支持四种成员类型，每个 member 携带独立 roleId
+
+成员类型说明：
+  USER          用户，id 为用户 userId，需携带 corpId（标识用户所属组织）
+  DEPT          部门，id 为部门 ID，需携带 corpId（标识部门所属组织）
+  CONVERSATION  群聊，id 为群聊 conversationId（cid 开头），无需 corpId
+  TAG           角色标签（也称角色组），id 为角色标签 ID，需携带 corpId。当用户要求"添加角色组"或"添加角色标签"时使用此类型
+
+支持的角色: MANAGER / EDITOR / DOWNLOADER / READER
+--notify 仅在 --members 新格式时生效，仅对 USER 和 CONVERSATION 类型成员发送通知（DEPT 和 TAG 不通知），默认 false。
+省略 --notify 时 CLI 不向服务端发送该字段，服务端按不通知处理；需要通知请显式传 --notify。`,
 		Example: `  dws drive permission add --node DOC_ID --users uid1 --role READER
-  dws drive permission add --node DOC_ID --users uid1,uid2 --role EDITOR`,
+  dws drive permission add --node DOC_ID --users uid1,uid2 --role EDITOR
+  dws drive permission add --node DOC_ID --members '[{"type":"USER","id":"uid1","roleId":"READER","corpId":"xxx"}]' --notify
+  dws drive permission add --node DOC_ID --members '[{"type":"CONVERSATION","id":"cidXXX","roleId":"READER"},{"type":"TAG","id":"tagId1","roleId":"EDITOR","corpId":"xxx"}]'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "doc-id", "file-id")
 			if err != nil {
 				return err
 			}
-			if err := validateRequiredFlags(cmd, "role"); err != nil {
+			if err := validateMembersExclusivity(cmd); err != nil {
 				return err
 			}
-			userIds, err := collectUserIDs(cmd)
-			if err != nil {
-				return err
+			toolArgs := map[string]any{"nodeId": nodeID}
+			members, mErr := collectMembers(cmd, false)
+			if mErr != nil {
+				return mErr
 			}
-			toolArgs := map[string]any{
-				"nodeId":  nodeID,
-				"roleId":  normalizePermissionRole(mustGetFlag(cmd, "role")),
-				"userIds": userIds,
+			if len(members) > 0 {
+				toolArgs["members"] = members
+				if cmd.Flags().Changed("notify") {
+					notify, _ := cmd.Flags().GetBool("notify")
+					toolArgs["notify"] = notify
+				}
+			} else {
+				if err := validateRequiredFlags(cmd, "role"); err != nil {
+					return err
+				}
+				userIds, err := collectUserIDs(cmd)
+				if err != nil {
+					return err
+				}
+				toolArgs["roleId"] = normalizePermissionRole(mustGetFlag(cmd, "role"))
+				toolArgs["userIds"] = userIds
 			}
 			if v := flagOrFallback(cmd, "workspace", "workspace-id"); v != "" {
 				toolArgs["workspaceId"] = v
@@ -2083,7 +2408,9 @@ func newDriveCommand() *cobra.Command {
 				Examples: []string{"dws drive permission add --node <ID> --users uid1,uid2 --role READER --format json"},
 			},
 			Parameters: []contract.ParamDecl{
+				{Name: "members", Property: "members"},
 				{Name: "node", Property: "nodeId"},
+				{Name: "notify", Property: "notify"},
 				{Name: "role", Property: "roleId"},
 				{Name: "users", Property: "userIds"},
 				{Name: "workspace", Property: "workspaceId"},
@@ -2091,35 +2418,64 @@ func newDriveCommand() *cobra.Command {
 		},
 	})
 	drivePermAddCmd.Flags().String("node", "", "目标节点 ID 或 URL (必填)")
-	drivePermAddCmd.Flags().String("users", "", "用户 userId 列表，逗号分隔 (必填)")
+	drivePermAddCmd.Flags().String("users", "", "用户 userId 列表，逗号分隔 (旧格式)")
 	drivePermAddCmd.Flags().String("user", "", "")
 	_ = drivePermAddCmd.Flags().MarkHidden("user")
-	drivePermAddCmd.Flags().String("role", "", "角色: MANAGER / EDITOR / DOWNLOADER / READER (必填)")
+	drivePermAddCmd.Flags().String("role", "", "角色: MANAGER / EDITOR / DOWNLOADER / READER (旧格式必填)")
 	drivePermAddCmd.Flags().String("workspace", "", "知识库 ID (选填)")
+	drivePermAddCmd.Flags().String("members", "", "成员列表 JSON 数组（新格式），支持 USER/DEPT/CONVERSATION/TAG 类型（TAG=角色组），与 --users 互斥")
+	drivePermAddCmd.Flags().Bool("notify", false, "是否通知被添加的成员（仅 --members 新格式时生效，需显式传入才通知）")
 
 	drivePermUpdateCmd := &cobra.Command{
 		Use:   "update",
 		Short: "更新协作者权限",
+		Args:  cobra.NoArgs,
 		Long: `更新文档空间节点已有协作者的权限角色。
 
-支持的角色 (--role): MANAGER / EDITOR / DOWNLOADER / READER`,
-		Example: `  dws drive permission update --node DOC_ID --users uid1 --role EDITOR`,
+两种传参方式（互斥）：
+  旧格式：--users 传入逗号分隔的 userId 列表 + --role 指定统一角色（仅 USER 类型）
+  新格式：--members 传入 JSON 数组，支持四种成员类型，每个 member 携带独立 roleId
+
+成员类型说明：
+  USER          用户，id 为用户 userId，需携带 corpId
+  DEPT          部门，id 为部门 ID，需携带 corpId
+  CONVERSATION  群聊，id 为群聊 conversationId（cid 开头），无需 corpId
+  TAG           角色标签（也称角色组），id 为角色标签 ID，需携带 corpId
+
+支持的角色: MANAGER / EDITOR / DOWNLOADER / READER
+--notify 仅在 --members 新格式时生效，仅对 USER 和 CONVERSATION 类型成员发送通知，默认 false。`,
+		Example: `  dws drive permission update --node DOC_ID --users uid1 --role EDITOR
+  dws drive permission update --node DOC_ID --members '[{"type":"USER","id":"uid1","roleId":"EDITOR","corpId":"xxx"}]' --notify=false
+  dws drive permission update --node DOC_ID --members '[{"type":"TAG","id":"tagId1","roleId":"READER","corpId":"xxx"}]'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "doc-id", "file-id")
 			if err != nil {
 				return err
 			}
-			if err := validateRequiredFlags(cmd, "role"); err != nil {
+			if err := validateMembersExclusivity(cmd); err != nil {
 				return err
 			}
-			userIds, err := collectUserIDs(cmd)
-			if err != nil {
-				return err
+			toolArgs := map[string]any{"nodeId": nodeID}
+			members, mErr := collectMembers(cmd, false)
+			if mErr != nil {
+				return mErr
 			}
-			toolArgs := map[string]any{
-				"nodeId":  nodeID,
-				"roleId":  normalizePermissionRole(mustGetFlag(cmd, "role")),
-				"userIds": userIds,
+			if len(members) > 0 {
+				toolArgs["members"] = members
+				if cmd.Flags().Changed("notify") {
+					notify, _ := cmd.Flags().GetBool("notify")
+					toolArgs["notify"] = notify
+				}
+			} else {
+				if err := validateRequiredFlags(cmd, "role"); err != nil {
+					return err
+				}
+				userIds, err := collectUserIDs(cmd)
+				if err != nil {
+					return err
+				}
+				toolArgs["roleId"] = normalizePermissionRole(mustGetFlag(cmd, "role"))
+				toolArgs["userIds"] = userIds
 			}
 			if v := flagOrFallback(cmd, "workspace", "workspace-id"); v != "" {
 				toolArgs["workspaceId"] = v
@@ -2156,7 +2512,9 @@ func newDriveCommand() *cobra.Command {
 				Examples: []string{"dws drive permission update --node <ID> --users uid1 --role EDITOR --format json"},
 			},
 			Parameters: []contract.ParamDecl{
+				{Name: "members", Property: "members"},
 				{Name: "node", Property: "nodeId"},
+				{Name: "notify", Property: "notify"},
 				{Name: "role", Property: "roleId"},
 				{Name: "users", Property: "userIds"},
 				{Name: "workspace", Property: "workspaceId"},
@@ -2164,33 +2522,39 @@ func newDriveCommand() *cobra.Command {
 		},
 	})
 	drivePermUpdateCmd.Flags().String("node", "", "目标节点 ID 或 URL (必填)")
-	drivePermUpdateCmd.Flags().String("users", "", "用户 userId 列表，逗号分隔 (必填)")
+	drivePermUpdateCmd.Flags().String("users", "", "用户 userId 列表，逗号分隔 (旧格式)")
 	drivePermUpdateCmd.Flags().String("user", "", "")
 	_ = drivePermUpdateCmd.Flags().MarkHidden("user")
-	drivePermUpdateCmd.Flags().String("role", "", "新角色: MANAGER / EDITOR / DOWNLOADER / READER (必填)")
+	drivePermUpdateCmd.Flags().String("role", "", "新角色: MANAGER / EDITOR / DOWNLOADER / READER (旧格式必填)")
 	drivePermUpdateCmd.Flags().String("workspace", "", "知识库 ID (选填)")
+	drivePermUpdateCmd.Flags().String("members", "", "成员列表 JSON 数组（新格式），支持 USER/DEPT/CONVERSATION/TAG 类型（TAG=角色组），与 --users 互斥")
+	drivePermUpdateCmd.Flags().Bool("notify", false, "是否通知被变更的成员（仅 --members 新格式时生效）")
 
 	drivePermListCmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "查询协作者列表",
-		Long:    `查询文档空间节点的协作者列表。`,
+		Long: `查询文档空间节点的协作者列表，支持分页和角色过滤。
+
+底层一次性返回全量成员后在内存中按 pageSize 分页，支持通过 nextToken 翻页。
+出参包含 totalCount、hasMore 和 nextToken。
+当 hasMore 为 true 时，传入下一次请求的 --next-token 即可获取下一页。`,
 		Example: `  dws drive permission list --node DOC_ID
-  dws drive permission list --node DOC_ID --limit 100 --filter-role MANAGER,EDITOR`,
+  dws drive permission list --node DOC_ID --limit 50 --filter-role MANAGER,EDITOR
+  dws drive permission list --node DOC_ID --next-token <上次返回的 nextToken>`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "doc-id", "file-id")
 			if err != nil {
 				return err
 			}
 			toolArgs := map[string]any{"nodeId": nodeID}
-			limit := 0
-			if cmd.Flags().Changed("limit") {
-				limit, _ = cmd.Flags().GetInt("limit")
-			} else if cmd.Flags().Changed("max-results") {
-				limit, _ = cmd.Flags().GetInt("max-results")
+			if size, ok, err := permissionPageSizeFromFlags(cmd); err != nil {
+				return err
+			} else if ok {
+				toolArgs["pageSize"] = size
 			}
-			if limit > 0 {
-				toolArgs["maxResults"] = limit
+			if v := flagOrFallback(cmd, "next-token", "cursor", "page-token"); v != "" {
+				toolArgs["nextToken"] = v
 			}
 			if v := mustGetFlag(cmd, "filter-role"); v != "" {
 				toolArgs["filterRoleIds"] = parseRoleList(v)
@@ -2231,38 +2595,184 @@ func newDriveCommand() *cobra.Command {
 			},
 			Parameters: []contract.ParamDecl{
 				{Name: "filter-role", Property: "filterRoleIds"},
-				{Name: "limit", Property: "maxResults"},
+				// limit 不声明 Property：运行时经 cap 校验（1-50）转换为 pageSize，
+				// 属 CLI 分页输入而非 1:1 RPC property（reviewed mapping exclusion）。
+				{Name: "limit"},
+				{Name: "next-token", Property: "nextToken"},
 				{Name: "node", Property: "nodeId"},
 				{Name: "workspace", Property: "workspaceId"},
 			},
+			Pagination: &contract.PaginationSpec{Kind: contract.PaginationKindCursor, CursorParameter: "next-token"},
 		},
 	})
 	drivePermListCmd.Flags().String("node", "", "目标节点 ID 或 URL (必填)")
-	drivePermListCmd.Flags().Int("limit", 30, "返回成员数上限，默认 30，最大 200")
+	drivePermListCmd.Flags().Int("limit", 30, "返回成员数上限，默认 30，最大 50")
 	drivePermListCmd.Flags().Int("max-results", 0, "")
 	_ = drivePermListCmd.Flags().MarkHidden("max-results")
 	drivePermListCmd.Flags().String("filter-role", "", "按角色过滤: OWNER / MANAGER / EDITOR / DOWNLOADER / READER")
+	drivePermListCmd.Flags().String("next-token", "", "分页游标，首次不传，后续传入上一次返回的 nextToken")
 	drivePermListCmd.Flags().String("workspace", "", "知识库 ID (选填)")
 
-	drivePermRemoveCmd := &cobra.Command{
-		Use:     "remove",
-		Aliases: []string{"rm"},
-		Short:   "移除协作者权限",
-		Long:    `从文档空间节点移除协作成员的权限。`,
-		Example: `  dws drive permission remove --node DOC_ID --users uid1
-  dws drive permission remove --node DOC_ID --users uid1,uid2`,
+	drivePermGetSettingCmd := &cobra.Command{
+		Use:   "get-setting",
+		Short: "查询节点权限设置",
+		Long: `查询文档空间节点的权限设置，返回三部分配置：
+
+- permissionMode: 权限模式（INHERITED 继承上级 / INDEPENDENT 独立管理）
+- shareScope: 分享范围（可见范围、链接分享设置）
+- policies: 权限策略列表（水印、组织外分享、成员邀请门槛等）
+
+查询协作者列表请改用 permission list。`,
+		Example: `  dws drive permission get-setting --node DOC_ID`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "doc-id", "file-id")
 			if err != nil {
 				return err
 			}
-			userIds, err := collectUserIDs(cmd)
+			return callMCPToolOnServer("drive", "get_permission_setting", map[string]any{"nodeId": nodeID})
+		},
+	}
+	DeclareLeafMetadata(drivePermGetSettingCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "idempotent",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "get_permission_setting",
+				CanonicalPath:  "drive.get_permission_setting",
+				CLIPath:        "drive permission get-setting",
+				PrimaryCLIPath: "drive permission get-setting",
+			},
+			Description: "查询文档空间节点的权限设置（权限模式/分享范围/权限策略）",
+			Result: &contract.ResultSpec{
+				Outcomes: []contract.ResultOutcome{contract.ResultOutcomeSuccess, contract.ResultOutcomeFailure},
+				DataSchema: json.RawMessage(`{
+  "type":"object",
+  "description":"节点权限设置（权限模式/分享范围/权限策略）",
+  "properties":{
+    "docUrl":{"type":"string","description":"当前查询节点的文档访问链接，可直接在浏览器中打开"},
+    "nodeId":{"type":"string","description":"当前查询节点的 nodeId（入参解析后的规范形式）"},
+    "permissionMode":{"type":["string","null"],"enum":["INHERITED","INDEPENDENT",null],"description":"权限模式：INHERITED=继承上级权限配置，INDEPENDENT=独立管理权限；未知时为 null"},
+    "shareScope":{
+      "type":"object",
+      "description":"分享范围设置",
+      "properties":{
+        "visibility":{"type":["string","null"],"enum":["PRIVATE","ORGANIZATION","PUBLIC",null],"description":"PRIVATE=仅指定成员可见，ORGANIZATION=组织内公开，PUBLIC=互联网公开；未知时为 null"},
+        "partnerIncluded":{"type":"boolean","description":"仅 visibility=ORGANIZATION 时有意义，true 表示组织内公开范围包含合作伙伴（含生态组织外部协作成员）。其余场景为 false。"},
+        "defaultRole":{"type":["string","null"],"enum":["READER","DOWNLOADER","EDITOR","MANAGER",null],"description":"仅 visibility=ORGANIZATION 时有意义，通过链接获得访问的默认角色；未下发或不在值域内时为 null"},
+        "canSearch":{"type":"boolean","description":"仅 visibility=ORGANIZATION 时有意义。"},
+        "canRecommend":{"type":"boolean","description":"仅 visibility=ORGANIZATION 时有意义。"},
+        "linkShare":{
+          "type":"object",
+          "description":"链接分享设置；仅开启链接分享时返回，未开启时该字段不返回",
+          "properties":{
+            "requirePassword":{"type":"boolean","description":"true 表示通过链接访问需要提供密码。密码明文不会返回。"},
+            "expireAt":{"type":["integer","null"],"description":"秒级 Unix 时间戳，未设置过期时为 null。"},
+            "expireDays":{"type":["integer","null"],"description":"设置的有效天数，未设置时为 null。"},
+            "forCurrentNode":{"type":"boolean","description":"true 表示该分享范围仅作用于当前节点；false 表示作用于当前节点及其子节点。"}
+          },
+          "additionalProperties":true
+        }
+      },
+      "additionalProperties":true
+    },
+    "policies":{
+      "type":"array",
+      "description":"仅包含支持的策略项，未下发或不受支持的策略不会返回；node_spread_scope 仅文件夹类节点返回；allowedValues 为当前可设置的取值，disabledValues 为当前不可设置的取值及原因，两者互斥",
+      "items":{
+        "type":"object",
+        "description":"权限策略项",
+        "properties":{
+          "code":{"type":"string","enum":["external_share","external_share_manager_only","member_invite","member_invite_org_only","comment","permission_apply","external_permission_apply","watermark","node_spread","online_content_copy","node_move_forbidden","node_spread_scope"],"description":"external_share=添加企业外协作者；external_share_manager_only=企业外协作者仅限管理员；member_invite=谁可以添加协作者；member_invite_org_only=仅企业内用户可添加协作者；comment=谁可以评论；permission_apply=权限申请；external_permission_apply=组织外权限申请；watermark=显示水印；node_spread=谁可以下载、创建副本、打印；online_content_copy=谁可以复制文档内容；node_move_forbidden=禁止移动；node_spread_scope=下载与传播生效范围（仅文件夹类节点）。"},
+          "name":{"type":"string","description":"策略的中文名称，文案与产品权限设置页一致；为确定性字段，只要该策略返回就必带"},
+          "description":{"type":"string","description":"策略的含义说明，解释该策略管控的行为及各取值的语义；为确定性字段，只要该策略返回就必带"},
+          "value":{"type":["string","null"],"description":"取值随策略类型不同：开关型（external_share、external_share_manager_only、member_invite_org_only、permission_apply、external_permission_apply、watermark、node_move_forbidden）为 ENABLED/DISABLED；阈值型（member_invite、comment）为 READER_AND_ABOVE/DOWNLOADER_AND_ABOVE/EDITOR_AND_ABOVE/MANAGER_AND_ABOVE，阈值型（node_spread、online_content_copy）为 DOWNLOADER_AND_ABOVE/EDITOR_AND_ABOVE/MANAGER_AND_ABOVE/NOBODY，均表示不低于该角色才允许对应操作，NOBODY 表示所有人禁止；二值型（node_spread_scope）：ALL_NODES=下载与传播限制对所有文档生效，PREVIEWABLE_ONLY=仅对可预览的文档（在线文档、图片视频等）生效；未知值时为 null"},
+          "disabledValues":{
+            "type":"array",
+            "description":"该策略当前不可设置的取值及禁用原因（与 allowedValues 互斥）；为确定性字段，恒返回，无被禁取值时为空数组",
+            "items":{
+              "type":"object",
+              "properties":{
+                "value":{"type":"string","description":"被禁档位的取值（与 value 同一值域）"},
+                "reason":{"type":["string","null"],"description":"服务端按请求语言返回的禁用原因文案，仅供展示理解，可为 null"}
+              },
+              "required":["value"],
+              "additionalProperties":true
+            }
+          },
+          "allowedValues":{"type":["array","null"],"items":{"type":"string"},"description":"该策略当前可设置的取值（与 value 同一值域），未下发时为 null"}
+        },
+        "required":["code","name","description","disabledValues"],
+        "additionalProperties":true
+      }
+    }
+  },
+  "required":["docUrl","nodeId","shareScope","policies"],
+  "additionalProperties":true
+}`),
+			},
+			Interface: &contract.InterfaceSpec{
+				Mode:         "mcp",
+				Availability: "available",
+				Ref:          &contract.InterfaceRefSpec{ProductID: "drive", RPCName: "get_permission_setting"},
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "查询文档空间节点的权限设置（权限模式/分享范围/权限策略）",
+				UseWhen:      []string{"查看节点权限模式/分享范围/水印等权限策略配置时"},
+				AvoidWhen: []string{
+					"查协作者清单用 permission list",
+					"查可申请角色与审批人用 permission apply-info",
+				},
+				Examples: []string{"dws drive permission get-setting --node <ID> --format json"},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "node", Property: "nodeId"},
+			},
+		},
+	})
+	drivePermGetSettingCmd.Flags().String("node", "", "目标节点 ID 或 URL (必填)")
+
+	drivePermRemoveCmd := &cobra.Command{
+		Use:     "remove",
+		Aliases: []string{"rm"},
+		Short:   "移除协作者权限",
+		Long: `从文档空间节点移除协作成员的权限。
+
+两种传参方式（互斥）：
+  旧格式：--users 传入逗号分隔的 userId 列表（仅 USER 类型）
+  新格式：--members 传入 JSON 数组，支持四种成员类型，只需 type 和 id（USER/DEPT/TAG 还需 corpId）
+
+成员类型说明：
+  USER          用户，id 为用户 userId，需携带 corpId
+  DEPT          部门，id 为部门 ID，需携带 corpId
+  CONVERSATION  群聊，id 为群聊 conversationId（cid 开头），无需 corpId
+  TAG           角色标签（也称角色组），id 为角色标签 ID，需携带 corpId`,
+		Example: `  dws drive permission remove --node DOC_ID --users uid1
+  dws drive permission remove --node DOC_ID --users uid1,uid2
+  dws drive permission remove --node DOC_ID --members '[{"type":"USER","id":"uid1","corpId":"xxx"}]'`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "doc-id", "file-id")
 			if err != nil {
 				return err
 			}
-			toolArgs := map[string]any{
-				"nodeId":  nodeID,
-				"userIds": userIds,
+			if err := validateMembersExclusivity(cmd); err != nil {
+				return err
+			}
+			toolArgs := map[string]any{"nodeId": nodeID}
+			members, mErr := collectMembers(cmd, true)
+			if mErr != nil {
+				return mErr
+			}
+			if len(members) > 0 {
+				toolArgs["members"] = members
+			} else {
+				userIds, err := collectUserIDs(cmd)
+				if err != nil {
+					return err
+				}
+				toolArgs["userIds"] = userIds
 			}
 			if v := flagOrFallback(cmd, "workspace", "workspace-id"); v != "" {
 				toolArgs["workspaceId"] = v
@@ -2272,8 +2782,11 @@ func newDriveCommand() *cobra.Command {
 	}
 	DeclareLeafMetadata(drivePermRemoveCmd, LeafSpec{
 		Safety: contract.SafetySpec{
+			// 批量移除（最多 30 个 USER/DEPT/CONVERSATION/TAG）会一次性撤销多个
+			// 成员的访问，部门/群聊/角色组还可能间接影响大量用户，与删除同级的
+			// destructive 入口，必须经过用户确认（--yes 或交互 yes）。
 			Effect: "write", Risk: "medium",
-			Confirmation: "not_required", Idempotency: "unknown",
+			Confirmation: "user_required", Idempotency: "unknown",
 		},
 		Contract: LeafContract{
 			Identity: contract.ToolIdentitySpec{
@@ -2299,6 +2812,7 @@ func newDriveCommand() *cobra.Command {
 				Examples: []string{"dws drive permission remove --node <ID> --users uid1 --format json"},
 			},
 			Parameters: []contract.ParamDecl{
+				{Name: "members", Property: "members"},
 				{Name: "node", Property: "nodeId"},
 				{Name: "users", Property: "userIds"},
 				{Name: "workspace", Property: "workspaceId"},
@@ -2306,13 +2820,14 @@ func newDriveCommand() *cobra.Command {
 		},
 	})
 	drivePermRemoveCmd.Flags().String("node", "", "目标节点 ID 或 URL (必填)")
-	drivePermRemoveCmd.Flags().String("users", "", "用户 userId 列表，逗号分隔 (必填)")
+	drivePermRemoveCmd.Flags().String("users", "", "用户 userId 列表，逗号分隔 (旧格式)")
 	drivePermRemoveCmd.Flags().String("user", "", "")
 	_ = drivePermRemoveCmd.Flags().MarkHidden("user")
+	drivePermRemoveCmd.Flags().String("members", "", "成员列表 JSON 数组（新格式），只需 type 和 id（USER/DEPT/TAG 还需 corpId），与 --users 互斥")
 	drivePermRemoveCmd.Flags().String("workspace", "", "知识库 ID (选填)")
 
 	// permission 子命令 --node 隐藏别名（保持与迁移前 doc 命令一致）
-	for _, c := range []*cobra.Command{drivePermAddCmd, drivePermUpdateCmd, drivePermListCmd, drivePermRemoveCmd} {
+	for _, c := range []*cobra.Command{drivePermAddCmd, drivePermUpdateCmd, drivePermListCmd, drivePermGetSettingCmd, drivePermRemoveCmd} {
 		c.Flags().String("url", "", "")
 		c.Flags().String("id", "", "")
 		c.Flags().String("node-id", "", "")
@@ -2544,7 +3059,7 @@ func newDriveCommand() *cobra.Command {
 	drivePermApplyCmd.Flags().String("notify-mode", "", "通知方式: DEFAULT / MSG_ACCOUNT / SINGLE_CHAT")
 	drivePermApplyCmd.Flags().String("reason", "", "申请理由，最长 200 字符")
 
-	drivePermissionCmd.AddCommand(drivePermAddCmd, drivePermUpdateCmd, drivePermListCmd, drivePermRemoveCmd, drivePermTransferOwnerCmd, drivePermApplyInfoCmd, drivePermApplyCmd)
+	drivePermissionCmd.AddCommand(drivePermAddCmd, drivePermUpdateCmd, drivePermListCmd, drivePermGetSettingCmd, drivePermRemoveCmd, drivePermTransferOwnerCmd, drivePermApplyInfoCmd, drivePermApplyCmd)
 
 	// --node 隐藏别名（保持与迁移前 doc 命令一致）
 	driveNodeAliasCmds := []*cobra.Command{
@@ -2568,12 +3083,12 @@ func newDriveCommand() *cobra.Command {
 	_ = driveRenameCmd.Flags().MarkHidden("title")
 
 	// ── drive recycle 子命令组 ──
-	recycleCmd := &cobra.Command{
+	recycleCmd := newGroupCommand(&cobra.Command{
 		Use:   "recycle",
 		Short: "钉盘回收站管理",
 		Long:  `管理钉盘回收站：查看回收站列表、还原回收项。`,
 		RunE:  groupRunE,
-	}
+	})
 
 	recycleListCmd := &cobra.Command{
 		Use:     "list",
@@ -2683,7 +3198,7 @@ func newDriveCommand() *cobra.Command {
 	// ── deprecated 代理命令（Phase 2：从 doc 迁移，保留兼容，警告引导到新命令）──
 
 	// folder create → dws wiki node create --type folder
-	driveFolderCmd := &cobra.Command{Use: "folder", Short: "文件夹管理（deprecated）", RunE: groupRunE}
+	driveFolderCmd := newGroupCommand(&cobra.Command{Use: "folder", Short: "文件夹管理（deprecated）", RunE: groupRunE})
 	driveFolderCreateCmd := &cobra.Command{
 		Use:   "create",
 		Short: "创建文件夹（deprecated）",
@@ -2713,12 +3228,12 @@ func newDriveCommand() *cobra.Command {
 	driveFolderCmd.AddCommand(driveFolderCreateCmd)
 
 	// ── drive publish (文件互联网公开发布管理) ──
-	drivePublishCmd := &cobra.Command{
+	drivePublishCmd := newGroupCommand(&cobra.Command{
 		Use:   "publish",
 		Short: "文件互联网公开发布管理",
 		Long:  `管理文件的互联网公开发布状态：设置公开、关闭公开、查询公开状态。`,
 		RunE:  groupRunE,
-	}
+	})
 
 	drivePublishSetCmd := &cobra.Command{
 		Use:   "set",
@@ -2726,21 +3241,46 @@ func newDriveCommand() *cobra.Command {
 		Long: `[危险] 将文件设置为互联网公开发布。公开后任何人通过链接即可访问，无需登录钉钉。
 操作者需要是该文件的管理员或拥有者。执行前需要确认，或传入 --yes 跳过确认。
 
-公开权限 (--permission): READER(仅可查看) / DOWNLOADER(可查看和下载，默认) / EDITOR(可编辑)`,
-		Example: `  dws drive publish set --node <fileId> --yes
-  dws drive publish set --node <fileId> --permission READER --yes
-  dws drive publish set --node <fileId>                        # 交互式确认`,
+公开权限 (--permission): READER(仅可查看) / DOWNLOADER(可查看和下载，默认) / EDITOR(可编辑)
+访问密码 (--password): 4位英文字母+数字（如 Ab12）。设置后访问公开链接需输入密码。
+  显式传空（--password ""）可关闭已有密码保护；不传则不改变密码设置。
+有效期 (--expire-days): 正整数=N天后过期，0=永久有效，不传=保持原值不变，负数会报错。
+注意：密码和有效期的支持情况取决于节点类型和组织策略，不支持时服务端会返回友好提示。`,
+		Example: `  dws drive publish set --node <fileId> --format json
+  dws drive publish set --node <fileId> --password Ab12 --expire-days 7 --format json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "file-id")
-			if err != nil {
-				return err
-			}
+			// LeafSpec.Validate 已在本 RunE 之前（先于确认门）完成 node/permission/
+			// password/expire-days 校验，这里直接取值装配参数。
+			nodeID := flagOrFallback(cmd, "node", "url", "id", "node-id", "file-id")
+			permVal := mustGetFlag(cmd, "permission")
+
+			// 密码操作类型（三态：keep / set / clear）
+			pwdChanged := cmd.Flags().Changed("password")
+			pwdVal := mustGetFlag(cmd, "password")
+			expireChanged := cmd.Flags().Changed("expire-days")
+
 			toolArgs := map[string]any{
 				"fileId":    nodeID,
 				"published": true,
 			}
-			if v := mustGetFlag(cmd, "permission"); v != "" {
-				toolArgs["publishPermission"] = v
+			if permVal != "" {
+				toolArgs["publishPermission"] = permVal
+			}
+
+			// 密码三值语义：传非空=设置密码，传空=清除密码，没传=不修改
+			if pwdChanged {
+				if pwdVal == "" {
+					toolArgs["requirePassword"] = false
+				} else {
+					toolArgs["requirePassword"] = true
+					toolArgs["password"] = pwdVal
+				}
+			}
+
+			// expireDays 三值：0=永久, N=N天（负数已在 Validate fail-fast 拦截）
+			if expireChanged {
+				expireDaysVal, _ := cmd.Flags().GetInt("expire-days")
+				toolArgs["expireDays"] = expireDaysVal
 			}
 			return callMCPTool("set_file_publish", toolArgs)
 		},
@@ -2752,7 +3292,37 @@ func newDriveCommand() *cobra.Command {
 		},
 		Validate: func(cmd *cobra.Command, args []string) error {
 			_, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "file-id")
-			return err
+			if err != nil {
+				return err
+			}
+			// 以下三项校验与 node 校验同处 Validate（RunE 包装器内先于
+			// ConfirmSafety 执行）：非法参数在触发确认或远端调用之前 fail-fast。
+
+			// permission 枚举校验（fail-fast）
+			permVal := mustGetFlag(cmd, "permission")
+			if permVal != "" {
+				validPermissions := map[string]bool{"READER": true, "DOWNLOADER": true, "EDITOR": true}
+				if !validPermissions[permVal] {
+					return fmt.Errorf("--permission 值无效：%s，必须为 READER、DOWNLOADER 或 EDITOR", permVal)
+				}
+			}
+
+			// 密码格式校验（三态中的 set：非空才校验；空串=清除密码，合法）
+			if cmd.Flags().Changed("password") {
+				if pwdVal := mustGetFlag(cmd, "password"); pwdVal != "" {
+					if !regexp.MustCompile(`^[A-Za-z0-9]{4}$`).MatchString(pwdVal) {
+						return fmt.Errorf("密码必须为 4 位字母或数字组合（如 ab3D）")
+					}
+				}
+			}
+
+			// 负数有效期会导致 expireDays 字段缺失，服务端 PUT 语义下被设为永久公开。
+			if cmd.Flags().Changed("expire-days") {
+				if expireDaysVal, _ := cmd.Flags().GetInt("expire-days"); expireDaysVal < 0 {
+					return fmt.Errorf("--expire-days 不能为负数，请传入正整数（如 7）或 0（表示永久有效）")
+				}
+			}
+			return nil
 		},
 		Contract: LeafContract{
 			Identity: contract.ToolIdentitySpec{
@@ -2781,10 +3351,16 @@ func newDriveCommand() *cobra.Command {
 					"dws drive publish set --node <fileId> --permission READER --format json",
 				},
 			},
+			Parameters: []contract.ParamDecl{
+				{Name: "password", Property: "password"},
+				{Name: "expire-days", Property: "expireDays"},
+			},
 		},
 	})
 	drivePublishSetCmd.Flags().String("node", "", "目标文件 ID (dentryUuid) 或 URL (必填)")
 	drivePublishSetCmd.Flags().String("permission", "", "公开后的权限: READER / DOWNLOADER(默认) / EDITOR")
+	drivePublishSetCmd.Flags().String("password", "", "访问密码：传非空值设置/修改密码，传空字符串清除密码，不传则不改变")
+	drivePublishSetCmd.Flags().Int("expire-days", 0, "公开有效期天数：0 表示永久有效")
 
 	drivePublishUnsetCmd := &cobra.Command{
 		Use:     "unset",
@@ -2794,10 +3370,8 @@ func newDriveCommand() *cobra.Command {
 		Example: `  dws drive publish unset --node <fileId> --yes
   dws drive publish unset --node <fileId>          # 交互式确认`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			nodeID, err := mustFlagOrFallback(cmd, "node", "url", "id", "node-id", "file-id")
-			if err != nil {
-				return err
-			}
+			// LeafSpec.Validate 已在本 RunE 之前确认 node 非空，这里直接取值。
+			nodeID := flagOrFallback(cmd, "node", "url", "id", "node-id", "file-id")
 			return callMCPTool("set_file_publish", map[string]any{
 				"fileId":    nodeID,
 				"published": false,
@@ -3013,11 +3587,11 @@ func newDriveCommand() *cobra.Command {
 	_ = driveRecentCmd.Flags().MarkHidden("page-token")
 
 	// ── drive star (文档收藏管理) ──
-	driveStarCmd := &cobra.Command{
+	driveStarCmd := newGroupCommand(&cobra.Command{
 		Use:   "star",
 		Short: "文档收藏管理",
 		RunE:  groupRunE,
-	}
+	})
 	driveStarAddCmd := &cobra.Command{
 		Use:     "add",
 		Short:   "收藏文档",
@@ -3279,6 +3853,274 @@ func newDriveCommand() *cobra.Command {
 		RegisterCrossProductAliases(child)
 	}
 
+	driveStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "比较本地文件夹与钉盘文件夹的差异",
+		Long: `比较本地文件夹与钉盘文件夹的差异：本地取 --local-folder（绝对路径），钉盘取
+--remote-folder（文件夹 dentryUuid）指向的文件夹，按精确 MD5（默认）或快速
+modified_time（--quick）逐文件比对。两侧各自递归遍历，rel_path 相对各自根目录。
+
+输出五类差异：
+  new_local   仅本地存在
+  new_remote  仅钉盘存在
+  modified    两侧都存在且本次检测判定为已变更
+  unchanged   两侧都存在且本次检测判定为未变更
+  unknown     两侧都存在，但 exact 模式下远端无可靠 MD5、无法核对内容（不判 unchanged/modified）
+
+只比对钉盘 type=file 的二进制文件（跳过在线文档与快捷方式）；本地只比对常规文件。`,
+		Example: `  dws drive status --local-folder /abs/path/repo --remote-folder <dentryUuid>
+  dws drive status --local-folder /abs/path/repo --remote-folder <dentryUuid> --space-id xxxx
+  dws drive status --local-folder /abs/path/repo --remote-folder <dentryUuid> --quick`,
+		RunE: runDriveStatus,
+	}
+	driveStatusCmd.Flags().String("local-folder", "", "本地文件夹绝对路径 (必填)")
+	driveStatusCmd.Flags().String("remote-folder", "", "钉盘文件夹 ID (dentryUuid) (必填)")
+	driveStatusCmd.Flags().String("space-id", "", "钉盘空间 ID，不传则使用「我的文件」(可选)")
+	driveStatusCmd.Flags().Bool("quick", false, "快速模式：只比较 modified_time，不计算 MD5 (可选)")
+
+	drivePullCmd := &cobra.Command{
+		Use:   "pull",
+		Short: "把钉盘文件夹单向镜像到本地（Drive → 本地）",
+		Long: `递归下载钉盘 --remote-folder 文件夹下所有 type=file 的文件到本地
+--local-folder 对应路径（子目录自动创建），单向、文件级镜像。
+
+已存在的本地文件按 --if-exists 处理：
+  skip       默认，安全：本地已存在则保持不动，只新增
+  smart      推荐增量同步：本地 modified_time 已 ≥ 远端时则跳过下载
+  overwrite  总是下载覆盖（Drive 作为权威源）
+
+该命令会写入本地文件系统，执行前需要用户确认；非交互环境先用 --dry-run
+预览，确认后以相同参数追加 --yes 执行。
+
+输出 summary（downloaded/skipped/failed）与逐文件 items。
+若有文件下载失败，命令以非零退出码退出，结构化结果仍在 stdout。`,
+		Example: `  dws drive pull --local-folder /abs/path/repo --remote-folder <dentryUuid>
+  dws drive pull --local-folder /abs/path/repo --remote-folder <dentryUuid> --if-exists smart
+  dws drive pull --local-folder /abs/path/repo --remote-folder <dentryUuid> --space-id xxxx`,
+		RunE: runDrivePull,
+	}
+	drivePullCmd.Flags().String("local-folder", "", "本地文件夹绝对路径 (必填)")
+	drivePullCmd.Flags().String("remote-folder", "", "钉盘文件夹 ID (dentryUuid) (必填)")
+	drivePullCmd.Flags().String("space-id", "", "钉盘空间 ID，不传则使用「我的文件」(可选)")
+	drivePullCmd.Flags().String("if-exists", "skip", "本地文件已存在时的策略: skip|smart|overwrite；命令会写本地，执行需确认 (可选)")
+
+	drivePushCmd := &cobra.Command{
+		Use:   "push",
+		Short: "把本地文件夹单向镜像到钉盘（本地 → Drive）",
+		Long: `递归把本地 --local-folder 下的文件与子目录（含空目录）镜像到钉盘
+--remote-folder 文件夹：缺失的目录按需创建（已存在则复用，不重建），文件按
+--if-exists 处理。文件级镜像——只新增/覆盖，不删除远端多余文件。
+
+已存在的远端文件按 --if-exists 处理：
+  skip       默认，安全：已存在则保持不动，只新增
+  smart      增量同步：远端 modified_time 已 ≥ 本地时跳过，否则走覆盖路径
+  overwrite  覆盖远端同名文件
+
+该命令会写入钉盘，执行前需要用户确认；非交互环境先用 --dry-run 预览，
+确认后以相同参数追加 --yes 执行。
+
+输出 summary（uploaded/skipped/failed，uploaded 含新建与覆盖）与逐条 items
+（含 folder_created）。若有文件失败，命令以非零退出码退出，结构化结果仍在 stdout。`,
+		Example: `  dws drive push --local-folder /abs/path/repo --remote-folder <dentryUuid>
+  dws drive push --local-folder /abs/path/repo --remote-folder <dentryUuid> --if-exists smart
+  dws drive push --local-folder /abs/path/repo --remote-folder <dentryUuid> --if-exists overwrite`,
+		RunE: runDrivePush,
+	}
+	drivePushCmd.Flags().String("local-folder", "", "本地文件夹绝对路径 (必填)")
+	drivePushCmd.Flags().String("remote-folder", "", "钉盘目标文件夹 ID (dentryUuid) (必填)")
+	drivePushCmd.Flags().String("space-id", "", "钉盘空间 ID，不传则使用「我的文件」(可选)")
+	drivePushCmd.Flags().String("if-exists", "skip", "远端文件已存在时的策略: skip|smart|overwrite；命令会写钉盘，执行需确认 (可选)")
+
+	driveSyncCmd := &cobra.Command{
+		Use:   "sync",
+		Short: "本地文件夹与钉盘文件夹双向同步（本地 ⇄ Drive）",
+		Long: `把本地 --local-folder 与钉盘 --remote-folder 做文件级双向同步：先按精确 MD5
+（默认）或快速 modified_time（--quick）算出差异，再按方向执行：
+  new_local   仅本地存在  → 上传到钉盘（缺失的远端目录按需创建）
+  new_remote  仅钉盘存在  → 下载到本地
+  modified    两侧都变更  → 按 --on-conflict 解决
+  unchanged   两侧一致    → 不动
+
+两侧都变更时的 --on-conflict 策略：
+  skip         默认，两侧都不动并保留两边内容
+  remote-wins  拉取远端覆盖本地
+  local-wins   上传本地覆盖远端
+  keep-both    本地文件改名保留，再拉取远端到原路径
+  ask          交互式逐个询问
+
+exact 模式下远端无可靠 MD5、内容无法核对的文件归入 unknown 并跳过（可改用 --quick）。
+文件级同步——只新增/覆盖，不删除任何一侧的多余文件。输出 summary（pulled/pushed/
+skipped/failed）、diff 与逐条 items；有失败则以非零退出码退出，结构化结果仍在 stdout。
+
+该命令会同时写入本地与钉盘，执行前需要用户确认；非交互环境先用 --dry-run
+预览，确认后以相同参数追加 --yes 执行。`,
+		Example: `  dws drive sync --local-folder /abs/path/repo --remote-folder <dentryUuid>
+  dws drive sync --local-folder /abs/path/repo --remote-folder <dentryUuid> --on-conflict local-wins
+  dws drive sync --local-folder /abs/path/repo --remote-folder <dentryUuid> --quick --on-conflict keep-both`,
+		RunE: runDriveSync,
+	}
+	driveSyncCmd.Flags().String("local-folder", "", "本地文件夹绝对路径 (必填)")
+	driveSyncCmd.Flags().String("remote-folder", "", "钉盘文件夹 ID (dentryUuid) (必填)")
+	driveSyncCmd.Flags().String("space-id", "", "钉盘空间 ID，不传则使用「我的文件」(可选)")
+	driveSyncCmd.Flags().String("on-conflict", "skip", "两侧都变更时的策略: skip|remote-wins|local-wins|keep-both|ask；命令会写双端，执行需确认 (可选)")
+	driveSyncCmd.Flags().Bool("quick", false, "快速模式：只比较 modified_time，不计算 MD5 (可选)")
+
+	DeclareLeafMetadata(driveStatusCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "read", Risk: "low",
+			Confirmation: "not_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "folder_status",
+				CanonicalPath:  "drive.folder_status",
+				CLIPath:        "drive status",
+				PrimaryCLIPath: "drive status",
+			},
+			Description: "比较本地文件夹与钉盘文件夹的差异，只读不落盘。",
+			Result:      driveFolderStatusResultSpec(),
+			Interface: &contract.InterfaceSpec{
+				Mode:         "composite",
+				Availability: "available",
+				Reason:       "Reviewed composite workflow: the command recursively lists the remote folder through drive/list_files, walks the local tree, and compares both sides by MD5 or modification time; no single pinned RPC represents the diff.",
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "比较本地文件夹与钉盘文件夹的差异，只读不落盘。",
+				UseWhen:      []string{"需要先看清本地与钉盘之间哪些文件新增、变更或一致，再决定拉取还是推送时"},
+				AvoidWhen:    []string{"只要单个文件的元数据用 drive info；要真正传输文件用 drive pull / push / sync"},
+				Examples: []string{
+					"dws drive status --local-folder /abs/path/repo --remote-folder <dentryUuid>",
+					"dws drive status --local-folder /abs/path/repo --remote-folder <dentryUuid> --quick",
+				},
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "local-folder", Required: boolPtr(true)},
+				{Name: "remote-folder", Required: boolPtr(true)},
+			},
+		},
+	})
+	DeclareLeafMetadata(drivePullCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "high",
+			Confirmation: "user_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "folder_pull",
+				CanonicalPath:  "drive.folder_pull",
+				CLIPath:        "drive pull",
+				PrimaryCLIPath: "drive pull",
+			},
+			Description: "把钉盘文件夹单向镜像到本地；写操作需确认，默认跳过本地既有文件。",
+			DryRun: &contract.DryRunSpec{
+				PreviewKind: contract.DryRunPreviewPlan,
+				RemoteReads: true,
+			},
+			Result: driveFolderPullResultSpec(),
+			Interface: &contract.InterfaceSpec{
+				Mode:         "composite",
+				Availability: "available",
+				Reason:       "Reviewed composite workflow: the command recursively lists the remote folder through drive/list_files and then downloads each file through drive/download_file plus an HTTP GET into a temporary file committed by an atomic rename; no single pinned RPC represents the mirror.",
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "把钉盘文件夹单向镜像到本地；写操作需确认，默认跳过本地既有文件。",
+				UseWhen:      []string{"需要把整个钉盘文件夹拉到本地目录时"},
+				AvoidWhen:    []string{"只下载单个文件用 drive download；要把本地推到钉盘用 drive push；要双向对齐用 drive sync"},
+				Examples: []string{
+					"dws drive pull --local-folder /abs/path/repo --remote-folder <dentryUuid>",
+					"dws drive pull --local-folder /abs/path/repo --remote-folder <dentryUuid> --if-exists smart --dry-run",
+				},
+				ExampleDispositions: driveFolderStatefulExampleDispositions(),
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "local-folder", Required: boolPtr(true)},
+				{Name: "remote-folder", Required: boolPtr(true)},
+			},
+		},
+	})
+	DeclareLeafMetadata(drivePushCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "high",
+			Confirmation: "user_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "folder_push",
+				CanonicalPath:  "drive.folder_push",
+				CLIPath:        "drive push",
+				PrimaryCLIPath: "drive push",
+			},
+			Description: "把本地文件夹单向镜像到钉盘；写操作需确认，默认跳过远端既有文件。",
+			DryRun: &contract.DryRunSpec{
+				PreviewKind: contract.DryRunPreviewPlan,
+				RemoteReads: true,
+			},
+			Result: driveFolderPushResultSpec(),
+			Interface: &contract.InterfaceSpec{
+				Mode:         "composite",
+				Availability: "available",
+				Reason:       "Reviewed composite workflow: the command recursively lists the remote folder through drive/list_files, creates missing folders through drive/create_folder, and uploads each file through drive/get_upload_info plus an HTTP PUT and drive/commit_upload; no single pinned RPC represents the mirror.",
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "把本地文件夹单向镜像到钉盘；写操作需确认，默认跳过远端既有文件。",
+				UseWhen:      []string{"需要把整个本地目录推送到钉盘文件夹时"},
+				AvoidWhen:    []string{"只上传单个文件用 drive upload；要把钉盘拉到本地用 drive pull；要双向对齐用 drive sync"},
+				Examples: []string{
+					"dws drive push --local-folder /abs/path/repo --remote-folder <dentryUuid>",
+					"dws drive push --local-folder /abs/path/repo --remote-folder <dentryUuid> --if-exists smart --dry-run",
+				},
+				ExampleDispositions: driveFolderStatefulExampleDispositions(),
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "local-folder", Required: boolPtr(true)},
+				{Name: "remote-folder", Required: boolPtr(true)},
+			},
+		},
+	})
+	DeclareLeafMetadata(driveSyncCmd, LeafSpec{
+		Safety: contract.SafetySpec{
+			Effect: "write", Risk: "high",
+			Confirmation: "user_required", Idempotency: "unknown",
+		},
+		Contract: LeafContract{
+			Identity: contract.ToolIdentitySpec{
+				ProductID:      "drive",
+				Name:           "folder_sync",
+				CanonicalPath:  "drive.folder_sync",
+				CLIPath:        "drive sync",
+				PrimaryCLIPath: "drive sync",
+			},
+			Description: "本地与钉盘文件夹双向同步；写操作需确认，默认跳过双端冲突。",
+			DryRun: &contract.DryRunSpec{
+				PreviewKind: contract.DryRunPreviewPlan,
+				RemoteReads: true,
+			},
+			Result: driveFolderSyncResultSpec(),
+			Interface: &contract.InterfaceSpec{
+				Mode:         "composite",
+				Availability: "available",
+				Reason:       "Reviewed composite workflow: the command computes the same diff as drive status and then resolves it in both directions through drive/download_file, drive/create_folder, drive/get_upload_info and drive/commit_upload according to --on-conflict; no single pinned RPC represents the bidirectional sync.",
+			},
+			Selection: contract.SelectionSpec{
+				AgentSummary: "本地与钉盘文件夹双向同步；写操作需确认，默认跳过双端冲突。",
+				UseWhen:      []string{"需要让本地目录与钉盘文件夹互相补齐时"},
+				AvoidWhen:    []string{"只需单方向镜像用 drive pull / push；只想看差异用 drive status"},
+				Examples: []string{
+					"dws drive sync --local-folder /abs/path/repo --remote-folder <dentryUuid>",
+					"dws drive sync --local-folder /abs/path/repo --remote-folder <dentryUuid> --on-conflict remote-wins --dry-run",
+				},
+				ExampleDispositions: driveFolderStatefulExampleDispositions(),
+			},
+			Parameters: []contract.ParamDecl{
+				{Name: "local-folder", Required: boolPtr(true)},
+				{Name: "remote-folder", Required: boolPtr(true)},
+			},
+		},
+	})
+
 	driveCmd.AddCommand(
 		driveListCmd,
 		driveListSpacesCmd,
@@ -3298,10 +4140,18 @@ func newDriveCommand() *cobra.Command {
 		driveMoveCmd,
 		driveRenameCmd,
 		driveStatsCmd,
+		driveQuotaCmd,
+		taskCmd,
+		newDriveExportCmd(),
 		driveShortcutCmd,
 		drivePermissionCmd,
 		drivePublishCmd,
 		recycleCmd,
+		// 同步命令：status / pull / push / sync
+		driveStatusCmd,
+		drivePullCmd,
+		drivePushCmd,
+		driveSyncCmd,
 		driveStarCmd,
 		driveCoverCmd,
 		driveRevertCmd,
@@ -3400,6 +4250,20 @@ func driveInfoWithDocFallback(fileID string, driveArgs map[string]any) error {
 		})
 	}
 	return deps.Out.PrintJSON(docResp)
+}
+
+// mapOrderByToCamelCase 将 CLI kebab-case 排序字段映射为 MCP camelCase。
+func mapOrderByToCamelCase(v string) string {
+	switch v {
+	case "used-quota":
+		return "usedQuota"
+	case "standard-used-quota":
+		return "standardUsedQuota"
+	case "exclusive-used-quota":
+		return "exclusiveUsedQuota"
+	default:
+		return ""
+	}
 }
 
 // sanitizeFileName removes all directory components and NUL bytes so remote

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type changelogGateRepo struct {
@@ -71,6 +72,20 @@ func newChangelogGateRepo(t *testing.T) *changelogGateRepo {
 		t.Fatalf("Abs(repo root) error = %v", err)
 	}
 	root := t.TempDir()
+	// Git may briefly continue automatic repository maintenance after a command
+	// exits on hosted runners. Proactively remove the fixture with bounded
+	// retries before testing.TempDir performs its strict final cleanup.
+	t.Cleanup(func() {
+		var cleanupErr error
+		for attempt := 0; attempt < 10; attempt++ {
+			cleanupErr = os.RemoveAll(root)
+			if cleanupErr == nil {
+				return
+			}
+			time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+		}
+		t.Errorf("RemoveAll changelog gate repository after retries: %v", cleanupErr)
+	})
 
 	for _, path := range []string{
 		"LICENSE",
@@ -108,6 +123,8 @@ func newChangelogGateRepo(t *testing.T) *changelogGateRepo {
 	changelogGateWrite(t, root, "CHANGELOG.md", changelogGateBase, 0o644)
 
 	changelogGateGit(t, root, "init", "-b", "main")
+	changelogGateGit(t, root, "config", "gc.auto", "0")
+	changelogGateGit(t, root, "config", "maintenance.auto", "false")
 	changelogGateGit(t, root, "config", "user.name", "Changelog Gate Test")
 	changelogGateGit(t, root, "config", "user.email", "changelog-gate@example.com")
 	changelogGateGit(t, root, "add", ".")
@@ -286,6 +303,125 @@ func TestChangelogPRContentOnlyAcceptsReleaseFragmentArchival(t *testing.T) {
 	if output, err := repo.runFragmentPolicy(t, sealBase, "HEAD"); err != nil {
 		t.Fatalf("release fragment policy rejected matching seal: %v\noutput:\n%s", err, output)
 	}
+}
+
+func TestReleaseFragmentPolicyAcceptsStablePostBetaArchival(t *testing.T) {
+	repo := newChangelogGateRepo(t)
+	changelogGateWrite(t, repo.root, ".changes/1236-stable-followup.md", "---\ncategory: Fixed\n---\n\n- Stable follow-up.\n", 0o644)
+	repo.commit(t, "add post-beta release fragment")
+	sealBase := strings.TrimSpace(changelogGateGit(t, repo.root, "rev-parse", "HEAD"))
+	changelogGateWrite(t, repo.root, "CHANGELOG.md", `# Changelog
+
+## [Unreleased]
+
+## [1.0.1] - 2026-07-17
+
+This release promotes the sealed `+"`v1.0.1-beta.1`"+` contents to stable.
+
+### Changed
+
+- Promote the complete beta release to stable.
+
+### Changes since `+"`v1.0.1-beta.1`"+`
+
+### Fixed
+
+- Stable follow-up.
+
+## [1.0.0] - 2026-07-01
+
+### Added
+
+- Initial release.
+`, 0o644)
+	archiveDir := filepath.Join(repo.root, ".changes", "released", "1.0.1")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll stable archive: %v", err)
+	}
+	if err := os.Rename(
+		filepath.Join(repo.root, ".changes", "1236-stable-followup.md"),
+		filepath.Join(archiveDir, "1236-stable-followup.md"),
+	); err != nil {
+		t.Fatalf("Rename stable release fragment: %v", err)
+	}
+	repo.commit(t, "seal stable release notes")
+
+	if output, err := repo.runFragmentPolicy(t, sealBase, "HEAD"); err != nil {
+		t.Fatalf("release fragment policy rejected stable seal: %v\noutput:\n%s", err, output)
+	}
+}
+
+func TestReleaseFragmentPolicyAcceptsOnlyUntaggedCanonicalBetaAmendments(t *testing.T) {
+	newAmendmentRepo := func(t *testing.T) (*changelogGateRepo, string) {
+		t.Helper()
+		repo := newChangelogGateRepo(t)
+		sealBase := repo.sealFragmentInto(t, "1.0.1-beta.1")
+		if output, err := repo.runFragmentPolicy(t, sealBase, "HEAD"); err != nil {
+			t.Fatalf("release fragment policy rejected initial beta seal: %v\noutput:\n%s", err, output)
+		}
+		changelogGateWrite(t, repo.root, ".changes/1235-sheet.md", "---\ncategory: Added\n---\n\n- Sheet accepts local float image files.\n", 0o644)
+		repo.commit(t, "merge post-seal beta fragment")
+		return repo, strings.TrimSpace(changelogGateGit(t, repo.root, "rev-parse", "HEAD"))
+	}
+
+	stageCanonicalAmendment := func(t *testing.T, repo *changelogGateRepo) {
+		t.Helper()
+		changelogGateWrite(t, repo.root, "CHANGELOG.md", `# Changelog
+
+## [Unreleased]
+
+## [1.0.1-beta.1] - 2026-07-17
+
+### Added
+
+- Chat reply mentions.
+
+- Sheet accepts local float image files.
+
+## [1.0.0] - 2026-07-01
+
+### Added
+
+- Initial release.
+`, 0o644)
+		archiveDir := filepath.Join(repo.root, ".changes", "released", "1.0.1-beta.1")
+		if err := os.Rename(filepath.Join(repo.root, ".changes", "1235-sheet.md"), filepath.Join(archiveDir, "1235-sheet.md")); err != nil {
+			t.Fatalf("Rename beta amendment fragment: %v", err)
+		}
+		repo.commit(t, "amend untagged beta release notes")
+	}
+
+	t.Run("accepts exact pre-tag merge", func(t *testing.T) {
+		repo, amendmentBase := newAmendmentRepo(t)
+		stageCanonicalAmendment(t, repo)
+
+		if output, err := repo.runFragmentPolicy(t, amendmentBase, "HEAD"); err != nil {
+			t.Fatalf("release fragment policy rejected canonical beta amendment: %v\noutput:\n%s", err, output)
+		}
+	})
+
+	t.Run("rejects tagged beta", func(t *testing.T) {
+		repo, amendmentBase := newAmendmentRepo(t)
+		stageCanonicalAmendment(t, repo)
+		changelogGateGit(t, repo.root, "tag", "v1.0.1-beta.1")
+
+		output, err := repo.runFragmentPolicy(t, amendmentBase, "HEAD")
+		if err == nil || !strings.Contains(output, "forbidden after tag v1.0.1-beta.1 exists") {
+			t.Fatalf("tagged beta amendment passed: err=%v\noutput:\n%s", err, output)
+		}
+	})
+
+	t.Run("rejects rewritten sealed prose", func(t *testing.T) {
+		repo, amendmentBase := newAmendmentRepo(t)
+		stageCanonicalAmendment(t, repo)
+		changelogGateWrite(t, repo.root, "CHANGELOG.md", strings.Replace(changelogGateSealedRelease, "Chat reply mentions.", "Rewritten sealed note.", 1), 0o644)
+		repo.commit(t, "rewrite sealed beta prose")
+
+		output, err := repo.runFragmentPolicy(t, amendmentBase, "HEAD")
+		if err == nil || !strings.Contains(output, "does not exactly match") {
+			t.Fatalf("rewritten beta amendment passed: err=%v\noutput:\n%s", err, output)
+		}
+	})
 }
 
 func TestReleaseFragmentPolicyRejectsInvalidActiveFragmentAndWrongArchiveVersion(t *testing.T) {
@@ -973,7 +1109,7 @@ if (!isInterfaceSensitive("internal/corecmd/corecmd.go")) {
 	}
 }
 
-func TestHighRiskClassificationShardsHelperChanges(t *testing.T) {
+func TestHighRiskClassificationShardsFanoutChanges(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("Abs(repo root) error = %v", err)
@@ -995,6 +1131,24 @@ if (!isHighRisk("internal/helpers/minutes.go")) {
 }
 if (isHighRisk("internal/helpersx/minutes.go")) {
   throw new Error("helper high-risk classification must respect the path boundary");
+}
+if (!isHighRisk("internal/shortcut/wiki/wiki.go")) {
+  throw new Error("shortcut changes must use the sharded full suite");
+}
+if (isHighRisk("internal/shortcuts/wiki/wiki.go")) {
+  throw new Error("shortcut high-risk classification must respect the path boundary");
+}
+for (const filename of [
+  "internal/cli/param_concepts.json",
+  "internal/cli/param_concepts.schema.json",
+  "internal/cli/param_aliases_generated.go",
+]) {
+  if (!isHighRisk(filename)) {
+    throw new Error(filename + " must use the sharded full suite");
+  }
+}
+if (isHighRisk("internal/cli/param_concepts.json.bak")) {
+  throw new Error("parameter-alias high-risk classification must use exact paths");
 }
 `
 	cmd := exec.Command("node", "-e", probe)
@@ -1019,12 +1173,50 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 	}
 
 	admission := readWorkflow(".github/workflows/ci.yml")
+	policyStart := strings.Index(admission, "\n  policy:\n")
+	policyEnd := strings.Index(admission, "\n  interface-integrity:\n")
+	if policyStart < 0 || policyEnd <= policyStart {
+		t.Fatal("Code Admission workflow missing Policy job boundaries")
+	}
+	policyJob := admission[policyStart:policyEnd]
+	if !strings.Contains(policyJob, "timeout-minutes: 15") {
+		t.Error("Policy job must retain enough headroom for full Schema policy validation")
+	}
+	requirePolicyEnv := func(step, nextStep string) {
+		t.Helper()
+		start := strings.Index(policyJob, "      - name: "+step+"\n")
+		end := strings.Index(policyJob[start+1:], "      - name: "+nextStep+"\n")
+		if start < 0 || end < 0 {
+			t.Fatalf("Policy job missing %q step boundary", step)
+		}
+		block := policyJob[start : start+1+end]
+		if !strings.Contains(block, "RELEASE_SEAL_ONLY: ${{ needs.lint.outputs.release_seal_only }}") {
+			t.Errorf("Policy %q step must receive release-seal classification", step)
+		}
+	}
+	requirePolicyEnv("Validate changed CHANGELOG content", "Validate release fragment lifecycle")
+	requirePolicyEnv("Validate trusted main metadata-only push", "Record CHANGELOG-only fast path")
+	pushStart := strings.Index(admission, "} else if (context.eventName === 'push') {")
+	pushEnd := strings.Index(admission, "\n            core.setOutput('changelog_only'")
+	if pushStart < 0 || pushEnd <= pushStart {
+		t.Fatal("Code Admission workflow missing push classification boundaries")
+	}
+	pushClassification := admission[pushStart:pushEnd]
+	if strings.Contains(pushClassification, "const exactReleaseSealDiff = isExactReleaseSeal(files)") {
+		t.Error("push release-seal fast path must not trust an unguarded compare file list")
+	}
 	for _, want := range []string{
 		"name: CI",
 		"files.length === 1",
 		"files[0].filename === 'CHANGELOG.md'",
 		"files[0].status === 'modified'",
 		"!files[0].previous_filename",
+		"const isExactReleaseSeal",
+		"file.status !== 'renamed'",
+		"file.additions !== 0",
+		"file.deletions !== 0",
+		"releaseSealOnly = isExactReleaseSeal(files)",
+		"release_seal_only: ${{ steps.classify.outputs.release_seal_only }}",
 		"pre-classification",
 		"post-classification",
 		"before.changed_files !== files.length",
@@ -1048,7 +1240,8 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		"mode=--fast-path",
 		`"$mode" "$PR_BASE_SHA" HEAD`,
 		`test "$(git rev-parse HEAD)" = "$PUSH_AFTER_SHA"`,
-		`--fast-path "$PUSH_BEFORE_SHA" "$PUSH_AFTER_SHA"`,
+		`"$mode" "$PUSH_BEFORE_SHA" "$PUSH_AFTER_SHA"`,
+		`./scripts/policy/check-release-fragments.sh \`,
 		"needs.lint.outputs.platform_sensitive == 'true'",
 		`COVERAGE_TARGET: "100"`,
 		`COVERAGE_ENFORCE_OVERALL: "false"`,
@@ -1060,7 +1253,9 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		`package_output="$(./scripts/ci/test-packages.sh list`,
 		"docs_only: ${{ steps.classify.outputs.docs_only }}",
 		"full_suite: ${{ steps.classify.outputs.full_suite }}",
-		"classifyFiles(files.length < 300)",
+		"const pushFilesComplete = files.length < 300",
+		"classifyFiles(pushFilesComplete)",
+		"pushFilesComplete && isExactReleaseSeal(files)",
 		"platformSensitive =",
 		"files.some(isNativeGoChange)",
 		"paths.some(isEditionSensitive)",
@@ -1070,6 +1265,7 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		"filename.startsWith('scripts/')",
 		"filename.startsWith('verify/')",
 		"filename.startsWith('internal/helpers/')",
+		"filename.startsWith('internal/shortcut/')",
 		"filename === 'test/fixtures/cli-interface-baseline.txt'",
 		"filename.startsWith('internal/interfacesnapshot/')",
 		"filename.startsWith('internal/cobracmd/')",
@@ -1077,13 +1273,13 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		"filename.startsWith('pkg/cmdutil/')",
 		"filename === 'skills_embed.go'",
 		"filename.startsWith('test/mock_mcp/')",
-		"name: Test (changed packages)",
+		`name: "Test (focused: ${{ matrix.shard }})"`,
 		"changed-test-packages.sh",
 		"Verify authoritative synthetic merge",
 		`test "$(git rev-parse HEAD^1)" = "$PR_BASE_SHA"`,
 		`test "$(git rev-parse HEAD^2)" = "$PR_HEAD_SHA"`,
 		`echo "TEST_HEAD_REF=$(git rev-parse HEAD)"`,
-		"list \"$TEST_BASE_REF\" \"$TEST_HEAD_REF\"",
+		`list-shard "$package_shard" "$TEST_BASE_REF" "$TEST_HEAD_REF"`,
 		"needs.lint.outputs.full_suite != 'true'",
 		`name: "Test (race: ${{ matrix.shard }})"`,
 		"name: Test (workflow and release contracts)",
@@ -1143,8 +1339,34 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 	if !strings.Contains(focusedJob, "timeout-minutes: 20") {
 		t.Error("focused test job must allow the scoped race suite up to 20 minutes")
 	}
-	if !strings.Contains(focusedJob, `go test -v -race -count=1 -timeout=15m "${packages[@]}"`) {
-		t.Error("focused race tests must retain enough package-level time for internal/app")
+	// The focused path fans the impacted set across the same shards as test-race
+	// and runs each shard the way test-race runs it, so no single job carries
+	// internal/app together with its reverse dependencies. internal/app is split
+	// further into one shard per bounded partition, which keeps its package-level
+	// headroom through the process-isolating helper instead of one long -timeout
+	// and is strictly stronger than a single app job: every partition process
+	// releases the framework registries it populated, and the partitions run
+	// concurrently rather than end to end. Each partition shard still selects the
+	// same single internal/app package, so the impacted-package query maps the
+	// shard name back to app. release-scripts is asserted because its dedicated
+	// job only runs at full-suite or release-sensitive scope, so losing it here
+	// would silently stop testing test/scripts changes.
+	for _, want := range []string{
+		`app-*) package_shard=app ;;`,
+		`test "${#packages[@]}" -eq 1`,
+		`./scripts/ci/run-app-race-tests.sh run "${packages[0]}" "${TEST_SHARD#app-}"`,
+		`if [ "$TEST_SHARD" = "release-scripts" ]; then`,
+		`go test -v -count=1 -timeout=10m "${packages[@]}"`,
+		"timeout_budget=12m",
+		`if [ "$TEST_SHARD" = "cli" ] ||`,
+		`[ "$TEST_SHARD" = "smoke" ]; then`,
+		"timeout_budget=15m",
+		`go test -v -race -count=1 -timeout="$timeout_budget" "${packages[@]}"`,
+		"- release-scripts",
+	} {
+		if !strings.Contains(focusedJob, want) {
+			t.Errorf("focused test job missing shard contract %q", want)
+		}
 	}
 
 	raceStart := focusedEnd
@@ -1153,11 +1375,19 @@ func TestChangelogPRFastPathWorkflowContract(t *testing.T) {
 		t.Fatal("Code Admission workflow missing race test job boundaries")
 	}
 	raceJob := admission[raceStart:raceEnd]
-	// Full race shards use a dynamic package-level timeout: default/floor 12m,
-	// with cli/smoke raised to 15m for NewRootCommand / Schema assembly under -race.
+	// internal/app is carried by one shard per bounded partition, so process-global
+	// command registries are released with each partition process and the Schema
+	// assembly peak no longer sits in front of the other partitions. Each
+	// partition shard resolves back to the same single internal/app package.
+	// Other full race shards retain the dynamic package timeout: default/floor
+	// 12m, with cli/smoke raised to 15m on slower hosted runners.
 	for _, want := range []string{
+		`app-*) package_shard=app ;;`,
+		`test "${#packages[@]}" -eq 1`,
+		`./scripts/ci/run-app-race-tests.sh run "${packages[0]}" "${TEST_SHARD#app-}"`,
 		"timeout_budget=12m",
-		`if [ "$TEST_SHARD" = "cli" ] || [ "$TEST_SHARD" = "smoke" ]; then`,
+		`if [ "$TEST_SHARD" = "cli" ] ||`,
+		`[ "$TEST_SHARD" = "smoke" ]; then`,
 		"timeout_budget=15m",
 		`go test -v -race -count=1 -timeout="$timeout_budget" "${packages[@]}"`,
 		"- smoke",

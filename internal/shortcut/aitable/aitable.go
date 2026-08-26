@@ -24,6 +24,7 @@ package aitable
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/DingTalk-Real-AI/dingtalk-workspace-cli/internal/corecmd"
 
@@ -57,6 +58,19 @@ func parseJSONObject(flag, s string) (map[string]any, error) {
 		return nil, fmt.Errorf("--%s 必须是 JSON 对象，got %T", flag, v)
 	}
 	return m, nil
+}
+
+// trimNonEmpty returns a copy of ss with each element trimmed of surrounding
+// whitespace and all empty entries dropped. Used to sanitize string-slice
+// flags (e.g. --field-ids) before they reach the downstream MCP tool.
+func trimNonEmpty(ss []string) []string {
+	out := ss[:0]
+	for _, s := range ss {
+		if t := strings.TrimSpace(s); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // resolveNamedList finds a list in a response envelope without conflating a
@@ -403,11 +417,7 @@ var BaseCopy = shortcut.Shortcut{
 	},
 	Tips: []string{`dws aitable +base-copy --base-id BASE_ID --target-folder-id FOLDER_ID`},
 	Execute: func(rt *shortcut.RuntimeContext) error {
-		return rt.CallMCP("copy_base", map[string]any{
-			"baseId":         rt.Str("base-id"),
-			"targetFolderId": rt.Str("target-folder-id"),
-			"onlyCopyMeta":   rt.Bool("only-struct"),
-		})
+		return executeBaseCopy(rt)
 	},
 }
 
@@ -659,8 +669,8 @@ var RecordQuery = shortcut.Shortcut{
 	Service:     "aitable",
 	Command:     "+record-query",
 	Product:     serverMain,
-	Description: "查询表格记录（按 ID 取 / 条件筛选 / 关键词 / 分页）",
-	Intent:      "当你要读取表格里的行数据——按 recordId 精确取、按结构化条件筛选、按关键词全文搜索或分页遍历时使用；返回匹配记录及其单元格值。",
+	Description: "查询表格记录（按 ID / 条件 / 关键词，并支持字段投影和分页）",
+	Intent:      "读取表格行数据；可按 recordId 精确取、按条件筛选、按关键词搜索，并用 fieldIds 只返回用户要求的字段以避免无关数据和 token 消耗；服务端未返回的计算字段不会由 CLI 本地补算。",
 	Risk:        shortcut.RiskRead,
 	Safety: contract.SafetySpec{
 		Effect: "read", Risk: "low",
@@ -674,17 +684,20 @@ var RecordQuery = shortcut.Shortcut{
 			CLIPath:        "aitable +record-query",
 			PrimaryCLIPath: "aitable +record-query",
 		},
-		Description: "查询表格记录（按 ID 取 / 条件筛选 / 关键词 / 分页）",
+		Description: "查询表格记录（按 ID / 条件 / 关键词，并支持字段投影和分页）",
 		Interface: &contract.InterfaceSpec{
 			Mode:         "composite",
 			Availability: "available",
 			Reason:       "Reviewed built-in shortcut adapter: the executable CLI owns validation, optional multi-step orchestration, output projection, and confirmation; the complete command contract is not represented by one pinned MCP interface_ref.",
 		},
 		Selection: contract.SelectionSpec{
-			AgentSummary: "查询表格记录（按 ID 取 / 条件筛选 / 关键词 / 分页）",
-			UseWhen:      []string{"当你要读取表格里的行数据——按 recordId 精确取、按结构化条件筛选、按关键词全文搜索或分页遍历时使用；返回匹配记录及其单元格值。"},
+			AgentSummary: "查询表格记录（按 ID / 条件 / 关键词，并支持字段投影和分页）",
+			UseWhen:      []string{"读取表格行数据；可按 recordId 精确取、按条件筛选、按关键词搜索，并用 fieldIds 只返回用户要求的字段以避免无关数据和 token 消耗；服务端未返回的计算字段不会由 CLI 本地补算。"},
 			AvoidWhen:    []string{"需要该 Shortcut 未公开的底层参数、原始响应或不同执行语义时，改用对应原子命令"},
-			Examples:     []string{"dws aitable +record-query --base-id B --table-id T --query \"关键词\" --limit 50"},
+			Examples: []string{
+				"dws aitable +record-query --base-id B --table-id T --query \"关键词\" --limit 50",
+				"dws aitable +record-query --base-id B --table-id T --record-ids R1,R2 --field-ids F_NAME,F_STATUS",
+			},
 		},
 	},
 	Flags: []shortcut.Flag{
@@ -698,7 +711,10 @@ var RecordQuery = shortcut.Shortcut{
 		{Name: "limit", Type: shortcut.FlagInt, Desc: "单次最大记录数，默认 100（可选）"},
 		{Name: "cursor", Type: shortcut.FlagString, Desc: "分页游标（可选）"},
 	},
-	Tips: []string{`dws aitable +record-query --base-id B --table-id T --query "关键词" --limit 50`},
+	Tips: []string{
+		`dws aitable +record-query --base-id B --table-id T --query "关键词" --limit 50`,
+		`dws aitable +record-query --base-id B --table-id T --record-ids R1,R2 --field-ids F_NAME,F_STATUS`,
+	},
 	Execute: func(rt *shortcut.RuntimeContext) error {
 		params := map[string]any{
 			"baseId":  rt.Str("base-id"),
@@ -733,7 +749,7 @@ var RecordQuery = shortcut.Shortcut{
 		if rt.Changed("cursor") {
 			params["cursor"] = rt.Str("cursor")
 		}
-		return rt.CallMCP("query_records", params)
+		return executeRecordQuery(rt, params)
 	},
 }
 
@@ -969,11 +985,7 @@ var RecordPrimaryDocGet = shortcut.Shortcut{
 	},
 	Tips: []string{`dws aitable +record-primary-doc-get --base-id B --table-id T --record-id R`},
 	Execute: func(rt *shortcut.RuntimeContext) error {
-		return rt.CallMCP("get_primary_doc", map[string]any{
-			"baseId":   rt.Str("base-id"),
-			"tableId":  rt.Str("table-id"),
-			"recordId": rt.Str("record-id"),
-		})
+		return executeRecordPrimaryDocGet(rt)
 	},
 }
 
@@ -2072,7 +2084,7 @@ func workflowListProject(data map[string]any) ([]map[string]any, error) {
 			return nil, fmt.Errorf("list_workflows response item %d must be an object, got %T", index, item)
 		}
 		row := map[string]any{}
-		if v, ok := workflowListFirst(m, "workflowId", "workflow_id", "id"); ok {
+		if v, ok := workflowListFirst(m, "workflowId", "flowId", "workflow_id", "id"); ok {
 			row["workflowId"] = v
 		}
 		if v, ok := workflowListFirst(m, "name", "workflowName", "title"); ok {
@@ -3110,6 +3122,7 @@ func init() {
 		BaseSchemaSnapshot,
 		BaseBootstrap,
 		TableGet,
+		TableBootstrap,
 		TableCopy,
 		TableUpdate,
 		TableDelete,

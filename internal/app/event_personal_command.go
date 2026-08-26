@@ -1220,7 +1220,7 @@ func runPersonalEventStop(c *cobra.Command, opts personalStopOptions) error {
 	}
 
 	busState := "personal bus stopped"
-	if err := personalStopBus(busctl.StopConfig{WorkDir: workDir}); err != nil {
+	if err := personalStopBus(busctl.StopConfig{WorkDir: workDir, IPCEndpoint: ipcEndpoint}); err != nil {
 		if errors.Is(err, busctl.ErrNotRunning) {
 			busState = "personal bus is not running"
 		} else {
@@ -1295,6 +1295,17 @@ func interruptPersonalConsumers(ipcEndpoint string, subscribeIDs []string) error
 }
 
 func stopPersonalConsumers(w io.Writer, ipcEndpoint string, subscribeIDs []string) error {
+	hasTarget := false
+	for _, id := range subscribeIDs {
+		if strings.TrimSpace(id) != "" {
+			hasTarget = true
+			break
+		}
+	}
+	if !hasTarget {
+		return nil
+	}
+
 	if _, err := personalStopConsumers(ipcEndpoint, subscribeIDs); err == nil {
 		return nil
 	} else if !errors.Is(err, busctl.ErrConsumerStopUnsupported) {
