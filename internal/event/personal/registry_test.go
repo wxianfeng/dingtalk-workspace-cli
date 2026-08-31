@@ -57,9 +57,42 @@ func TestCatalogEnabledEvents(t *testing.T) {
 		EventTodoTaskCreated,
 		EventTodoTaskUpdated,
 		EventTodoTaskDeleted,
+		EventCardAction,
 	}
 	if !reflect.DeepEqual(keys, want) {
 		t.Fatalf("keys = %#v, want %#v", keys, want)
+	}
+}
+
+func TestCardActionEventCatalogDefinitionAndSchema(t *testing.T) {
+	items := Catalog("card", true, false)
+	if len(items) != 1 {
+		t.Fatalf("Catalog(card) = %#v, want one event", items)
+	}
+	item := items[0]
+	if item.EventKey != EventCardAction || item.Category != "card" || item.RuleType != "all" || item.Status != StatusEnabled || !item.Public {
+		t.Fatalf("Catalog(card)[0] = %#v, want public enabled card/all event", item)
+	}
+	if len(item.RequiredParams) != 0 || item.Constraints != nil || item.Auth["identity"] != "user" || !item.EmptyRuleParam {
+		t.Fatalf("Catalog(card)[0] parameters/auth/rule = %#v/%#v/%#v/%t", item.RequiredParams, item.Constraints, item.Auth, item.EmptyRuleParam)
+	}
+
+	doc := BuildSchemaDocumentForMode(item, true)
+	if doc.JQRootPath != "." {
+		t.Fatalf("jq_root_path = %q, want .", doc.JQRootPath)
+	}
+	properties, ok := doc.Schema["properties"].(map[string]any)
+	if !ok || len(properties) != 5 {
+		t.Fatalf("schema.properties = %#v, want five conservative fields", doc.Schema["properties"])
+	}
+	for _, name := range []string{"type", "event_id", "timestamp", "subscribe_id", "payload"} {
+		if _, ok := properties[name].(map[string]any); !ok {
+			t.Fatalf("schema.properties.%s = %#v, want object", name, properties[name])
+		}
+	}
+	payload := properties["payload"].(map[string]any)
+	if payload["type"] != "object" || payload["additionalProperties"] != true {
+		t.Fatalf("schema.properties.payload = %#v, want open object", payload)
 	}
 }
 
@@ -232,6 +265,7 @@ func TestSchemaDocumentsDefaultToTransportEnvelope(t *testing.T) {
 		EventTodoTaskCreated,
 		EventTodoTaskUpdated,
 		EventTodoTaskDeleted,
+		EventCardAction,
 	} {
 		t.Run(eventKey, func(t *testing.T) {
 			def, ok := Lookup(eventKey)
@@ -781,6 +815,26 @@ func TestBuildRuleParamAllEvents(t *testing.T) {
 	}
 }
 
+func TestBuildRuleParamCardActionEventUsesEmptyRuleParam(t *testing.T) {
+	rule, param, err := BuildRuleParam(EventCardAction, RuleOptions{})
+	if err != nil {
+		t.Fatalf("BuildRuleParam() error = %v", err)
+	}
+	if rule != "all" || param != nil {
+		t.Fatalf("rule = %q, param = %#v; want all and nil", rule, param)
+	}
+	for name, opts := range map[string]RuleOptions{
+		"user":             {UserID: "staff-1"},
+		"open-dingtalk-id": {OpenDingTalkID: "open-user-1"},
+		"group":            {GroupID: "cid-1"},
+		"role-types":       {RoleTypes: []string{"executor"}},
+	} {
+		if _, _, err := BuildRuleParam(EventCardAction, opts); err == nil || !strings.Contains(err.Error(), "--"+name+" is not supported") {
+			t.Fatalf("%s error = %v, want unsupported flag", name, err)
+		}
+	}
+}
+
 func TestCrossPlatformCoverageBuildRuleParamTodoEvents(t *testing.T) {
 	for _, eventKey := range []string{EventTodoTaskCreated, EventTodoTaskUpdated, EventTodoTaskDeleted} {
 		t.Run(eventKey+"/default", func(t *testing.T) {
@@ -1025,6 +1079,7 @@ func TestSupportsMessageFilter(t *testing.T) {
 		EventTodoTaskCreated,
 		EventTodoTaskUpdated,
 		EventTodoTaskDeleted,
+		EventCardAction,
 		"unknown_event",
 	} {
 		if SupportsMessageFilter(eventKey) {

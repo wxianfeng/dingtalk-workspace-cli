@@ -122,6 +122,18 @@ type GroupLifecycleEventOutput struct {
 	Payload     map[string]any `json:"payload" description:"群生命周期事件业务数据，字段以服务端实际推送为准" additional_properties:"true"`
 }
 
+// CardActionEventOutput keeps the callback contract deliberately open until
+// the interactive-card business payload publishes stable reviewed fields.
+// Transport metadata remains explicit while unknown business fields survive
+// under payload.
+type CardActionEventOutput struct {
+	Type        string         `json:"type" description:"事件类型，固定为当前 event_key"`
+	EventID     string         `json:"event_id" description:"事件 ID，可用于去重"`
+	Timestamp   int64          `json:"timestamp" description:"事件发生时间戳" format:"timestamp_ms"`
+	SubscribeID string         `json:"subscribe_id" description:"订阅 ID"`
+	Payload     map[string]any `json:"payload" description:"互动卡片回调业务数据，字段以服务端实际推送为准" additional_properties:"true"`
+}
+
 type OAApprovalTaskCreatedOutput struct {
 	Type              string `json:"type" description:"事件类型，固定为当前 event_key"`
 	EventID           string `json:"event_id" description:"事件 ID，可用于去重"`
@@ -742,6 +754,18 @@ func ProjectOutput(ev transport.Event) (any, error) {
 			SubscribeID: base.SubscribeID,
 			Payload:     payload,
 		}, nil
+	case isCardActionEvent(eventType):
+		payload, err := decodeConservativePayload(data.Payload)
+		if err != nil {
+			return ev, fmt.Errorf("decode personal card action payload: %w", err)
+		}
+		return CardActionEventOutput{
+			Type:        base.Type,
+			EventID:     base.EventID,
+			Timestamp:   base.Timestamp,
+			SubscribeID: base.SubscribeID,
+			Payload:     payload,
+		}, nil
 	case isOAEvent(eventType):
 		return projectOAApprovalEvent(ev, base, data.Payload)
 	case isVoIPEvent(eventType):
@@ -1275,6 +1299,8 @@ func outputTypeForEvent(eventKey string) reflect.Type {
 		return reflect.TypeOf(GroupMemberEventOutput{})
 	case isGroupLifecycleEvent(eventKey):
 		return reflect.TypeOf(GroupLifecycleEventOutput{})
+	case isCardActionEvent(eventKey):
+		return reflect.TypeOf(CardActionEventOutput{})
 	case eventKey == EventOAApprovalTaskCreated:
 		return reflect.TypeOf(OAApprovalTaskCreatedOutput{})
 	case eventKey == EventOAApprovalTaskFinished:
@@ -1321,6 +1347,10 @@ func isGroupMemberEvent(eventKey string) bool {
 func isGroupLifecycleEvent(eventKey string) bool {
 	return eventKey == EventGroupUpdated ||
 		eventKey == EventGroupDisbanded
+}
+
+func isCardActionEvent(eventKey string) bool {
+	return eventKey == EventCardAction
 }
 
 func isOAEvent(eventKey string) bool {

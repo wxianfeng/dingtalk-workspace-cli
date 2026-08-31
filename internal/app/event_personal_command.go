@@ -846,7 +846,10 @@ func printPersonalMultiDryRun(w io.Writer, cfg consume.Config, plans []personalC
 			RoleTypes:      plan.RoleTypes,
 		})
 		_, filter, _ := personal.BuildFilter(plan.FilterJSON, plan.QueryCSV)
-		ruleJSON, _ := personal.CanonicalJSON(ruleParam)
+		ruleJSON := ""
+		if ruleParam != nil {
+			ruleJSON, _ = personal.CanonicalJSON(ruleParam)
+		}
 		fmt.Fprintf(w, "  subscription[%d]  : event_key=%s rule_type=%s rule_param=%s",
 			i, plan.EventKey, ruleType, ruleJSON)
 		if filter != "" {
@@ -916,13 +919,13 @@ func validatePersonalSubscriptionOptions(opts personalConsumeOptions) error {
 }
 
 func validatePersonalBusinessEventOptions(eventKey string, opts personalConsumeOptions) error {
-	if err := validatePersonalOAOrVoIPOptions(eventKey, opts); err != nil {
+	if err := validatePersonalUnfilteredEventOptions(eventKey, opts); err != nil {
 		return err
 	}
 	return validatePersonalTodoOptions(eventKey, opts)
 }
 
-func validatePersonalOAOrVoIPOptions(eventKey string, opts personalConsumeOptions) error {
+func validatePersonalUnfilteredEventOptions(eventKey string, opts personalConsumeOptions) error {
 	changed := personalUnsupportedOptionNames(opts)
 	if len(changed) == 0 {
 		return nil
@@ -934,6 +937,7 @@ func validatePersonalOAOrVoIPOptions(eventKey string, opts personalConsumeOption
 	categoryName := map[string]string{
 		"oa":   "OA",
 		"voip": "VoIP",
+		"card": "card",
 	}[def.Category]
 	if categoryName == "" {
 		return nil

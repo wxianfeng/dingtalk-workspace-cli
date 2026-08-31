@@ -50,6 +50,7 @@ const (
 	EventTodoTaskCreated              = "user_todo_task_create"
 	EventTodoTaskUpdated              = "user_todo_task_update"
 	EventTodoTaskDeleted              = "user_todo_task_delete"
+	EventCardAction                   = "user_card_action_event"
 )
 
 const (
@@ -68,6 +69,7 @@ type Definition struct {
 	Constraints    *ParameterConstraints `json:"constraints,omitempty"`
 	Auth           map[string]any        `json:"auth,omitempty"`
 	Public         bool                  `json:"-"`
+	EmptyRuleParam bool                  `json:"-"`
 }
 
 type ParameterConstraints struct {
@@ -406,6 +408,18 @@ var definitions = []Definition{
 		Auth:           map[string]any{"identity": "user"},
 		Public:         true,
 	},
+	{
+		EventKey:       EventCardAction,
+		DisplayName:    "互动卡片回调",
+		Description:    "当前用户收到互动卡片业务回调",
+		Category:       "card",
+		RuleType:       "all",
+		Status:         StatusEnabled,
+		RequiredParams: nil,
+		Auth:           map[string]any{"identity": "user"},
+		Public:         true,
+		EmptyRuleParam: true,
+	},
 }
 
 func targetUIDConstraints() *ParameterConstraints {
@@ -565,6 +579,9 @@ func BuildRuleParam(eventKey string, opts RuleOptions) (ruleType string, rulePar
 		}
 		if groupID != "" {
 			return "", nil, fmt.Errorf("--group is not supported for %s", eventKey)
+		}
+		if def.EmptyRuleParam {
+			return def.RuleType, nil, nil
 		}
 		return def.RuleType, map[string]any{}, nil
 	case "singleChat":
