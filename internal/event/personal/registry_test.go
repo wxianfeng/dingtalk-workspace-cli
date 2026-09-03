@@ -73,8 +73,8 @@ func TestCardActionEventCatalogDefinitionAndSchema(t *testing.T) {
 	if item.EventKey != EventCardAction || item.Category != "card" || item.RuleType != "all" || item.Status != StatusEnabled || !item.Public {
 		t.Fatalf("Catalog(card)[0] = %#v, want public enabled card/all event", item)
 	}
-	if len(item.RequiredParams) != 0 || item.Constraints != nil || item.Auth["identity"] != "user" || !item.EmptyRuleParam {
-		t.Fatalf("Catalog(card)[0] parameters/auth/rule = %#v/%#v/%#v/%t", item.RequiredParams, item.Constraints, item.Auth, item.EmptyRuleParam)
+	if len(item.RequiredParams) != 0 || item.Constraints != nil || item.Auth["identity"] != "user" {
+		t.Fatalf("Catalog(card)[0] parameters/auth = %#v/%#v/%#v", item.RequiredParams, item.Constraints, item.Auth)
 	}
 
 	doc := BuildSchemaDocumentForMode(item, true)
@@ -816,13 +816,13 @@ func TestBuildRuleParamAllEvents(t *testing.T) {
 	}
 }
 
-func TestBuildRuleParamCardActionEventUsesEmptyRuleParam(t *testing.T) {
+func TestBuildRuleParamCardActionEventUsesEmptyObject(t *testing.T) {
 	rule, param, err := BuildRuleParam(EventCardAction, RuleOptions{})
 	if err != nil {
 		t.Fatalf("BuildRuleParam() error = %v", err)
 	}
-	if rule != "all" || param != nil {
-		t.Fatalf("rule = %q, param = %#v; want all and nil", rule, param)
+	if rule != "all" || param == nil || len(param) != 0 {
+		t.Fatalf("rule = %q, param = %#v; want all and empty map", rule, param)
 	}
 	for name, opts := range map[string]RuleOptions{
 		"user":             {UserID: "staff-1"},

@@ -59,7 +59,7 @@
 | `user_todo_task_delete` | 当前用户相关的待办被删除 | `--role-types` 可选，默认全部角色 |
 | `user_card_action_triggered` | 当前用户收到互动卡片业务回调 | 无 |
 
-只承认上表 28 个事件码。默认身份就是当前用户，使用当前用户 OAuth 登录态，不要额外加身份切换 flag。七个 OA 事件与一个 VoIP 事件均使用 `all` 规则和 `{}` `filterRule`，不需要目标参数。互动卡片事件同样使用 `all`，但注册时 `ruleParam/filterRule` 保持空并省略，不发送 `{}`。三个 Todo 事件用 `--role-types creator,executor,participant` 控制当前用户作为创建者、执行者或参与者的范围；省略时默认三种角色，并下发为 `filterRule.roleTypes`。
+只承认上表 28 个事件码。默认身份就是当前用户，使用当前用户 OAuth 登录态，不要额外加身份切换 flag。七个 OA 事件、一个 VoIP 事件和互动卡片事件均使用 `all` 规则和 `{}` `filterRule`，不需要目标参数。三个 Todo 事件用 `--role-types creator,executor,participant` 控制当前用户作为创建者、执行者或参与者的范围；省略时默认三种角色，并下发为 `filterRule.roleTypes`。
 
 ## Intent mapping
 
@@ -286,7 +286,7 @@ dws event stop --all --yes
 - OA 事件读取顶层 `process_instance_id/process_code/title/status/create_time/event_time`；任务事件另有 `task_id`，完成、转交或终止事件按对应 schema 提供 `finish_time`，任务完成、任务转交和实例完成还提供 `result`。`status/result` 保留服务端实际值，不推断完整枚举；缺少稳定 ID 或 payload 非法时 stderr 会输出 warning，stdout 回退为原始 transport envelope。
 - VoIP 事件读取顶层 `biz_id/corp_id/org_id/target_uid/call_id/caller_uid/callee_uid/call_type/room_id/create_time/event_time`。`caller_uid/callee_uid` 是字符串标识，保留前导 `0`、连字符等原始内容，不转换为数字；`biz_id` 是重试稳定的业务去重 ID。敏感入会码不进入 `--flatten` 输出，默认非扁平 transport envelope 的 `.data` 也会移除 `roomCode`；只有显式 `--debug-raw-events` 才输出原始值，且不得记录或转发。
 - Todo 事件读取顶层 `task_id/subject/creator_id/create_time`；创建和更新事件还提供角色列表、优先级、状态阶段、计划/实际时间、来源与场景字段，更新额外提供 `old_status_stage/update_time`，删除提供 `delete_time`。空的可选时间和 `parent_id` 省略；缺少 `task_id` 或 payload 非法时回退为原始 transport envelope。
-- 互动卡片事件只承诺顶层 `type/event_id/timestamp/subscribe_id/payload`。`payload` 保留未知业务字段，不臆造卡片实例、操作者、动作或表单字段；注册时 `ruleParam/filterRule` 为空，且不接受用户、群、角色或消息 Filter 参数。
+- 互动卡片事件只承诺顶层 `type/event_id/timestamp/subscribe_id/payload`。`payload` 保留未知业务字段，不臆造卡片实例、操作者、动作或表单字段；注册时传递 `filterRule={}`，且不接受用户、群、角色或消息 Filter 参数。
 - 图片、文件等媒体消息的 `content` 可能是可读描述；合并转发媒体的下载定位信息位于对应 `forward_messages[].content`。需要实际媒体文件时调用 `dws chat message download-media`。
 - 普通 IM/OA 动作事件输出不含内部 `payload/uid/corpid/clientId/filterSubId/bizid`；VoIP 按已评审协议将所需字段映射为 `target_uid/corp_id/biz_id`。VoIP 原始排查必须显式使用 `--debug-raw-events`，`-f raw` 也必须和该开关一起使用。
 - 自己发的消息不作为事件回来（`isSelfLoop` 过滤）；自发验证会看到 0 事件，测试投递使用别人或机器人发消息。

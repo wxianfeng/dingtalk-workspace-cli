@@ -86,8 +86,8 @@ func TestPersonalCardEventListSchemaDryRunAndValidation(t *testing.T) {
 	if err := dryRun.Execute(); err != nil {
 		t.Fatalf("card multi dry-run error = %v", err)
 	}
-	if !strings.Contains(stderr.String(), "event_key="+personal.EventCardAction+" rule_type=all rule_param=\n") {
-		t.Fatalf("card dry-run did not preserve empty rule_param:\n%s", stderr.String())
+	if !strings.Contains(stderr.String(), "event_key="+personal.EventCardAction+" rule_type=all rule_param={}") {
+		t.Fatalf("card dry-run did not use empty-object rule_param:\n%s", stderr.String())
 	}
 }
 
@@ -130,8 +130,8 @@ func TestPersonalCardMultiConsumeCreatesAndCleansSubscriptionsOnSharedBus(t *tes
 	if runManyCalls != 1 || len(requests) != 2 || len(gotSpecs) != 2 {
 		t.Fatalf("shared bus calls/requests/specs = %d/%d/%d", runManyCalls, len(requests), len(gotSpecs))
 	}
-	if requests[0].EventKey != personal.EventCardAction || requests[0].RuleType != "all" || requests[0].RuleParam != nil || requests[0].Filter != nil {
-		t.Fatalf("card request = %#v, want all with empty rule/filter", requests[0])
+	if requests[0].EventKey != personal.EventCardAction || requests[0].RuleType != "all" || requests[0].RuleParam == nil || len(requests[0].RuleParam) != 0 || requests[0].Filter != nil {
+		t.Fatalf("card request = %#v, want all with empty-object rule and empty filter", requests[0])
 	}
 	if requests[1].EventKey != personal.EventOAApprovalTaskCreated || requests[1].RuleParam == nil || len(requests[1].RuleParam) != 0 {
 		t.Fatalf("OA control request changed = %#v", requests[1])

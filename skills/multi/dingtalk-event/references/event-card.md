@@ -8,7 +8,7 @@
 
 - 使用当前用户 OAuth 身份，非默认组织加全局 `--profile <corpId 或 profile 名>`。
 - 注册复用 IM 的 `POST /dws/subscription/user`，取消复用 `POST /dws/subscription/cancel`。
-- 事件使用 `ruleType=all`，但 `ruleParam/filterRule` 保持空，不发送 `{}`。
+- 事件使用 `ruleType=all`，并与 IM/OA 全量事件一致发送 `filterRule={}`。
 - 不接受 `--user`、`--open-dingtalk-id`、`--group`、`--query`、`--filter-json` 或 `--role-types`。
 
 ## Golden Route

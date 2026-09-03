@@ -69,7 +69,6 @@ type Definition struct {
 	Constraints    *ParameterConstraints `json:"constraints,omitempty"`
 	Auth           map[string]any        `json:"auth,omitempty"`
 	Public         bool                  `json:"-"`
-	EmptyRuleParam bool                  `json:"-"`
 }
 
 type ParameterConstraints struct {
@@ -418,7 +417,6 @@ var definitions = []Definition{
 		RequiredParams: nil,
 		Auth:           map[string]any{"identity": "user"},
 		Public:         true,
-		EmptyRuleParam: true,
 	},
 }
 
@@ -579,9 +577,6 @@ func BuildRuleParam(eventKey string, opts RuleOptions) (ruleType string, rulePar
 		}
 		if groupID != "" {
 			return "", nil, fmt.Errorf("--group is not supported for %s", eventKey)
-		}
-		if def.EmptyRuleParam {
-			return def.RuleType, nil, nil
 		}
 		return def.RuleType, map[string]any{}, nil
 	case "singleChat":

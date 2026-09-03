@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestCardActionSubscriptionReusesIMCreateAndCancelEndpointsWithEmptyFilterRule(t *testing.T) {
+func TestCardActionSubscriptionReusesIMCreateAndCancelEndpointsWithEmptyObjectFilterRule(t *testing.T) {
 	var createBody map[string]any
 	cancelCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,8 +55,8 @@ func TestCardActionSubscriptionReusesIMCreateAndCancelEndpointsWithEmptyFilterRu
 	if createBody["eventKey"] != EventCardAction {
 		t.Fatalf("eventKey = %#v, want %q", createBody["eventKey"], EventCardAction)
 	}
-	if _, present := createBody["filterRule"]; present {
-		t.Fatalf("create request must omit empty filterRule: %#v", createBody)
+	if createBody["filterRule"] != "{}" {
+		t.Fatalf("filterRule = %#v, want empty JSON object", createBody["filterRule"])
 	}
 	ext, ok := createBody["ext"].(map[string]any)
 	if !ok || ext["ruleType"] != "all" {
