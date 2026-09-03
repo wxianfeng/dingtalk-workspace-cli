@@ -57,7 +57,7 @@
 | `user_todo_task_create` | 当前用户相关的待办被创建 | `--role-types` 可选，默认全部角色 |
 | `user_todo_task_update` | 当前用户相关的待办被更新 | `--role-types` 可选，默认全部角色 |
 | `user_todo_task_delete` | 当前用户相关的待办被删除 | `--role-types` 可选，默认全部角色 |
-| `user_card_action_event` | 当前用户收到互动卡片业务回调 | 无 |
+| `user_card_action_triggered` | 当前用户收到互动卡片业务回调 | 无 |
 
 只承认上表 28 个事件码。默认身份就是当前用户，使用当前用户 OAuth 登录态，不要额外加身份切换 flag。七个 OA 事件与一个 VoIP 事件均使用 `all` 规则和 `{}` `filterRule`，不需要目标参数。互动卡片事件同样使用 `all`，但注册时 `ruleParam/filterRule` 保持空并省略，不发送 `{}`。三个 Todo 事件用 `--role-types creator,executor,participant` 控制当前用户作为创建者、执行者或参与者的范围；省略时默认三种角色，并下发为 `filterRule.roleTypes`。
 
@@ -91,7 +91,7 @@
 | "同时监听全部已公开 OA 事件" | 一个 consume 放入七个 OA event key，不加目标或消息过滤参数 |
 | "收到语音通话邀请时通知我" / "监听 VoIP 来电" | `dws event consume user_voip_call_receive_invite --flatten -f ndjson` |
 | "查看 VoIP 事件目录" | `dws event list --category voip` |
-| "互动卡片发生操作时通知我" / "监听卡片回调" | `dws event consume user_card_action_event --flatten -f ndjson` |
+| "互动卡片发生操作时通知我" / "监听卡片回调" | `dws event consume user_card_action_triggered --flatten -f ndjson` |
 | "查看互动卡片事件目录" | `dws event list --category card` |
 | "监听指派给我的待办创建/更新/删除" | 对应 `user_todo_task_create/update/delete`，使用 `--role-types executor --flatten -f ndjson` |
 | "监听我创建的待办变化" | 对应 Todo EventKey，使用 `--role-types creator --flatten -f ndjson` |
@@ -186,7 +186,7 @@ dws event consume user_voip_call_receive_invite --flatten -f ndjson
 dws event consume user_todo_task_create --role-types executor --flatten -f ndjson
 dws event consume user_todo_task_update --role-types executor --flatten -f ndjson
 dws event consume user_todo_task_delete --role-types executor --flatten -f ndjson
-dws event consume user_card_action_event --flatten -f ndjson
+dws event consume user_card_action_triggered --flatten -f ndjson
 ```
 
 同一目标、同一过滤条件的兼容事件优先使用一个多事件命令：

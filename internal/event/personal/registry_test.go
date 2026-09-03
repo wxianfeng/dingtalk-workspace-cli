@@ -198,6 +198,7 @@ func TestEventFromUserIsPublic(t *testing.T) {
 
 func TestLegacyEventKeysAreUnknown(t *testing.T) {
 	legacyKeys := []string{
+		"user_card_action_event",
 		"im_message_receive_at",
 		"im_message_receive_o2o",
 		"im_message_receive_group",

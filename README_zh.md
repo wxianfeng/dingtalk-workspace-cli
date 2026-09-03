@@ -498,7 +498,7 @@ dws event schema user_im_message_receive_o2o --flatten
 dws event list --category oa
 dws event schema user_oa_approval_task_created --flatten
 dws event list --category card
-dws event schema user_card_action_event --flatten
+dws event schema user_card_action_triggered --flatten
 dws event list --category todo
 dws event schema user_todo_task_create --flatten
 
@@ -548,7 +548,7 @@ dws event consume \
   --flatten -f ndjson
 
 # 监听互动卡片回调；扁平 payload 保持开放，不预设业务字段
-dws event consume user_card_action_event --flatten -f ndjson
+dws event consume user_card_action_triggered --flatten -f ndjson
 
 # 查看本地 consume，并取消指定订阅
 dws event status

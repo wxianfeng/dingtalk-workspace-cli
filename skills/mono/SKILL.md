@@ -133,7 +133,7 @@ cli_version: ">=1.0.15"
 用户提到"监听待我审批的任务/监听审批任务创建、完成或转交/监听审批单发起或终止/监听我发起的审批完成/监听审批实例完成/订阅 OA 事件/event consume user_oa_approval_*" → `event consume`
 用户提到"收到语音通话邀请时通知我/监听 VoIP 来电/订阅 user_voip_call_receive_invite" → `event consume`
 用户提到"监听待办创建/更新/删除/监听指派给我的待办/订阅 Todo 事件/event consume user_todo_task_*" → `event consume`，按角色使用 `--role-types`
-用户提到"互动卡片回调/监听卡片操作/订阅 user_card_action_event" → `event consume user_card_action_event --flatten -f ndjson`
+用户提到"互动卡片回调/监听卡片操作/订阅 user_card_action_triggered" → `event consume user_card_action_triggered --flatten -f ndjson`
 
 普通消息、reaction、已读、撤回监听优先由一个 `dws event +listen-im` 进程表达目标；不同用户、不同群或不同过滤条件拆成独立进程。只有高级事件控制才生成 `dws event consume <event_key> [event_key...] --flatten`。
 

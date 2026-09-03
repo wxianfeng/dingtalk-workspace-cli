@@ -40,7 +40,7 @@ metadata:
 | VoIP 通话邀请 | 读取 [VoIP 事件参考](references/event-voip.md)，使用精确 `event consume` EventKey |
 | 待办创建、更新或删除事件 | 读取 [Todo 事件参考](references/event-todo.md)，使用精确 `event consume` EventKey 与 `--role-types` |
 | 查看 Todo 事件目录 | `dws event list --category todo` |
-| 互动卡片回调 | 读取 [互动卡片事件参考](references/event-card.md)，使用 `dws event consume user_card_action_event --flatten -f ndjson` |
+| 互动卡片回调 | 读取 [互动卡片事件参考](references/event-card.md)，使用 `dws event consume user_card_action_triggered --flatten -f ndjson` |
 | 查看互动卡片事件目录 | `dws event list --category card` |
 | 已知 EventKey 或需要底层订阅控制 | `dws event consume`；参数与约束以 leaf Schema 为准 |
 | 查看状态 / 停止 | `dws event status` / `dws event stop <subscribe_id> --dry-run`，确认后再 `--yes` |
@@ -56,7 +56,7 @@ OA 事件不进入 `+listen-im`。七个公开 OA EventKey 都订阅当前 OAuth
 
 Todo 事件也不进入 `+listen-im`。三个公开 EventKey 使用 `--role-types creator,executor,participant` 控制当前用户作为创建者、执行者或参与者的范围；省略时默认三种角色。Todo 不接受用户、群或消息 Filter 参数，三项可共享同一角色范围和 bus。
 
-<!-- dws-intent: event.listen.card -->互动卡片回调使用 `dws event consume user_card_action_event --flatten -f ndjson`，不进入 `+listen-im`。该事件使用 `ruleType=all`，注册时 `ruleParam/filterRule` 为空；不接受用户、群、角色或消息 Filter 参数。扁平输出只承诺基础事件字段和开放 `payload` 对象。
+<!-- dws-intent: event.listen.card -->互动卡片回调使用 `dws event consume user_card_action_triggered --flatten -f ndjson`，不进入 `+listen-im`。该事件使用 `ruleType=all`，注册时 `ruleParam/filterRule` 为空；不接受用户、群、角色或消息 Filter 参数。扁平输出只承诺基础事件字段和开放 `payload` 对象。
 
 自然姓名和群名由 CLI 内部唯一解析：零命中或多候选返回结构化失败，在创建任何订阅前停止。`--dry-run` 走同一解析链。解析、监听、状态和停止必须使用同一个 `--profile`，不得跨组织搬运 ID。
 

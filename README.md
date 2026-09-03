@@ -504,7 +504,7 @@ dws event schema user_im_message_receive_o2o --flatten
 dws event list --category oa
 dws event schema user_oa_approval_task_created --flatten
 dws event list --category card
-dws event schema user_card_action_event --flatten
+dws event schema user_card_action_triggered --flatten
 dws event list --category todo
 dws event schema user_todo_task_create --flatten
 
@@ -554,7 +554,7 @@ dws event consume \
   --flatten -f ndjson
 
 # Listen for interactive-card callbacks; the flattened payload remains open-ended
-dws event consume user_card_action_event --flatten -f ndjson
+dws event consume user_card_action_triggered --flatten -f ndjson
 
 # Inspect local consumers and cancel a subscription
 dws event status

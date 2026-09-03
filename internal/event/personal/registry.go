@@ -50,7 +50,7 @@ const (
 	EventTodoTaskCreated              = "user_todo_task_create"
 	EventTodoTaskUpdated              = "user_todo_task_update"
 	EventTodoTaskDeleted              = "user_todo_task_delete"
-	EventCardAction                   = "user_card_action_event"
+	EventCardAction                   = "user_card_action_triggered"
 )
 
 const (

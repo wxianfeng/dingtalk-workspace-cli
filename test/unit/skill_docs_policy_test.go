@@ -375,7 +375,7 @@ func TestStandaloneEventSkillOwnsAllPersonalEventContracts(t *testing.T) {
 		"user_todo_task_create",
 		"user_todo_task_update",
 		"user_todo_task_delete",
-		"user_card_action_event",
+		"user_card_action_triggered",
 	}
 	for _, eventKey := range allEventKeys {
 		if !strings.Contains(combined.String(), eventKey) {

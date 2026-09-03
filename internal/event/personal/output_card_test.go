@@ -18,7 +18,7 @@ func TestCardActionEventOutputPreservesUnknownBusinessPayload(t *testing.T) {
 		SubscribeID:   "outer-sub",
 		Data: `{
 			"eventId":"card-event",
-			"eventKey":"user_card_action_event",
+			"eventKey":"user_card_action_triggered",
 			"occurredAtMs":1788200000123,
 			"subId":"inner-sub",
 			"payload":{
