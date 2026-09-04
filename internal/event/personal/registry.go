@@ -410,7 +410,7 @@ var definitions = []Definition{
 	{
 		EventKey:       EventCardAction,
 		DisplayName:    "互动卡片回调",
-		Description:    "当前用户收到互动卡片业务回调",
+		Description:    "当前用户提交或操作互动卡片后收到的回调；结构化上下文位于 payload.body.actionData.context",
 		Category:       "card",
 		RuleType:       "all",
 		Status:         StatusEnabled,

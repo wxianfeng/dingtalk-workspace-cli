@@ -553,13 +553,15 @@ dws event consume \
   --role-types executor \
   --flatten -f ndjson
 
-# Listen for interactive-card callbacks; the flattened payload remains open-ended
+# Listen for interactive-card callbacks; the schema documents reviewed fields while preserving extensions
 dws event consume user_card_action_triggered --flatten -f ndjson
 
 # Inspect local consumers and cancel a subscription
 dws event status
 dws event stop <subscribe_id>
 ```
+
+The structured interactive-card context is at `payload.body.actionData.context`. Join `questions[].id` to `answers[question_id]`, then resolve IDs in `selected` through the same question's `options[].id`; an empty `selected` is a valid no-selection state. JSON strings in `body.context` are compatibility fallbacks, and every payload level continues to preserve unknown fields.
 
 For one-to-one and specified-sender events, use exactly one target identity: `--user` for an internal `userId`, or `--open-dingtalk-id` for an `openDingtalkId`. The CLI does not infer or convert between these identity types.
 

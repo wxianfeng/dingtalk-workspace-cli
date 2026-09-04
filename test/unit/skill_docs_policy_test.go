@@ -118,13 +118,47 @@ func TestEventSkillUsesFlatOutputContract(t *testing.T) {
 				t.Errorf("%s missing event contract %q", path, required)
 			}
 		}
+		retiredEventText := strings.ReplaceAll(text, "payload.body.actionData.context", "")
 		for _, retired := range []string{
 			"payload.body.",
 			"尚无稳定业务样本",
 			"暂无稳定 payload schema",
 		} {
-			if strings.Contains(text, retired) {
+			if strings.Contains(retiredEventText, retired) {
 				t.Errorf("%s still documents retired event path %q", path, retired)
+			}
+		}
+	}
+}
+
+func TestEventSkillDocumentsReviewedCardCallbackContract(t *testing.T) {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
+	paths := []string{
+		filepath.Join(root, "skills", "multi", "dingtalk-event", "SKILL.md"),
+		filepath.Join(root, "skills", "multi", "dingtalk-event", "references", "event-card.md"),
+		filepath.Join(root, "skills", "mono", "references", "products", "event.md"),
+	}
+	for _, path := range paths {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(content)
+		for _, required := range []string{
+			"user_card_action_triggered",
+			"payload.body.actionData.context",
+			"questions[].id",
+			"answers[question_id]",
+			"selected",
+			"operatorDTO.uid",
+			"triggerTimestamp",
+		} {
+			if !strings.Contains(text, required) {
+				t.Errorf("%s missing interactive-card contract %q", path, required)
 			}
 		}
 	}

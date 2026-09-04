@@ -54,6 +54,33 @@ func TestPersonalCardEventListSchemaDryRunAndValidation(t *testing.T) {
 	if len(properties) != 5 || properties["payload"].(map[string]any)["additionalProperties"] != true {
 		t.Fatalf("card schema properties = %#v", properties)
 	}
+	payloadProperties := properties["payload"].(map[string]any)["properties"].(map[string]any)
+	if payloadProperties["event_time"].(map[string]any)["format"] != "timestamp_ms" {
+		t.Fatalf("card payload event_time schema = %#v", payloadProperties["event_time"])
+	}
+	bodyProperties := payloadProperties["body"].(map[string]any)["properties"].(map[string]any)
+	contextProperties := bodyProperties["actionData"].(map[string]any)["properties"].(map[string]any)["context"].(map[string]any)["properties"].(map[string]any)
+	if contextProperties["answers"].(map[string]any)["additionalProperties"].(map[string]any)["type"] != "object" {
+		t.Fatalf("card answers schema = %#v", contextProperties["answers"])
+	}
+
+	consumeHelp := newEventConsumeCommand()
+	if !strings.Contains(consumeHelp.Long, personal.EventCardAction) || !strings.Contains(consumeHelp.Long, "payload.body.actionData.context") {
+		t.Fatalf("event consume help missing card guidance:\n%s", consumeHelp.Long)
+	}
+	if !strings.Contains(consumeHelp.Example, personal.EventCardAction+" --flatten -f ndjson") {
+		t.Fatalf("event consume examples missing card command:\n%s", consumeHelp.Example)
+	}
+	if !strings.Contains(schema.Long, "互动卡片") || !strings.Contains(schema.Long, "payload.body.actionData.context") {
+		t.Fatalf("event schema help missing card guidance:\n%s", schema.Long)
+	}
+	if !strings.Contains(schema.Example, "schema "+personal.EventCardAction+" --flatten -f json") {
+		t.Fatalf("event schema examples missing card command:\n%s", schema.Example)
+	}
+	categoryFlag := list.Flags().Lookup("category")
+	if categoryFlag == nil || !strings.Contains(categoryFlag.Usage, "card") || !strings.Contains(list.Long, "--category card") {
+		t.Fatalf("event list --category help = %#v, want card", categoryFlag)
+	}
 
 	if err := validatePersonalBusinessEventOptions(personal.EventCardAction, personalConsumeOptions{}); err != nil {
 		t.Fatalf("card event without target/filter options error = %v", err)

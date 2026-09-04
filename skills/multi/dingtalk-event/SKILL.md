@@ -56,7 +56,7 @@ OA 事件不进入 `+listen-im`。七个公开 OA EventKey 都订阅当前 OAuth
 
 Todo 事件也不进入 `+listen-im`。三个公开 EventKey 使用 `--role-types creator,executor,participant` 控制当前用户作为创建者、执行者或参与者的范围；省略时默认三种角色。Todo 不接受用户、群或消息 Filter 参数，三项可共享同一角色范围和 bus。
 
-<!-- dws-intent: event.listen.card -->互动卡片回调使用 `dws event consume user_card_action_triggered --flatten -f ndjson`，不进入 `+listen-im`。该事件使用 `ruleType=all`，注册时与 IM/OA 全量事件一致传递 `filterRule={}`；不接受用户、群、角色或消息 Filter 参数。扁平输出只承诺基础事件字段和开放 `payload` 对象。
+<!-- dws-intent: event.listen.card -->互动卡片回调使用 `dws event consume user_card_action_triggered --flatten -f ndjson`，不进入 `+listen-im`。该事件使用 `ruleType=all`，注册时与 IM/OA 全量事件一致传递 `filterRule={}`；不接受用户、群、角色或消息 Filter 参数。结构化操作上下文位于 `payload.body.actionData.context`，所有 payload 层级继续保留未知字段。
 
 自然姓名和群名由 CLI 内部唯一解析：零命中或多候选返回结构化失败，在创建任何订阅前停止。`--dry-run` 走同一解析链。解析、监听、状态和停止必须使用同一个 `--profile`，不得跨组织搬运 ID。
 
@@ -76,7 +76,7 @@ Todo 事件也不进入 `+listen-im`。三个公开 EventKey 使用 `--role-type
 - 扁平消息/动作字段按事件类型读取：已读为 `reader_open_dingtalk_id`，撤回为 `recaller_open_dingtalk_id`，回应为 `reaction_name`、`operation_type`。媒体优先通过聊天读取命令加 `--download-resources`；已知消息 ID 的底层降级入口是 `dws chat message download-media`。
 - OA 扁平事件提供审批实例、任务和状态字段；字段差异、原始回退条件及与 OA 命令的稳定 ID 交接以 [OA 事件参考](references/event-oa.md) 为准。
 - Todo 扁平事件提供 `task_id`、标题、角色、状态阶段和时间字段；用真实 `task_id` 交给 `dws todo`，字段差异见 [Todo 事件参考](references/event-todo.md)。
-- 互动卡片扁平事件提供 `type/event_id/timestamp/subscribe_id/payload`；保留未知业务字段，不假设尚未评审的卡片字段，详见 [互动卡片事件参考](references/event-card.md)。
+- 互动卡片扁平事件提供 `type/event_id/timestamp/subscribe_id/payload`。优先读取 `payload.body.actionData.context`，按 `questions[].id` 关联 `answers[question_id]`，再按 `options[].id` 解析 `selected` 中的选项 ID；空 `selected` 是合法未选择状态，`custom` 独立保留。操作者读取 `operatorDTO.uid`；使用 `bizInfoDTO.bizId`、`sourceTurnId`、`spaceId`、`conversationContextDTO.cid` 做业务关联，但按不透明 ID 原样保留。分别保留 `timestamp`、`event_time`、`triggerTimestamp`，不假设三者相等。字符串化的 `body.context` 与 `extension` 仅作兼容或诊断回退，详见 [互动卡片事件参考](references/event-card.md)。
 
 ## 安全与失败处理
 

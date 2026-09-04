@@ -547,13 +547,15 @@ dws event consume \
   --role-types executor \
   --flatten -f ndjson
 
-# 监听互动卡片回调；扁平 payload 保持开放，不预设业务字段
+# 监听互动卡片回调；Schema 描述已评审字段并保留未知扩展
 dws event consume user_card_action_triggered --flatten -f ndjson
 
 # 查看本地 consume，并取消指定订阅
 dws event status
 dws event stop <subscribe_id>
 ```
+
+互动卡片的结构化操作上下文位于 `payload.body.actionData.context`。通过 `questions[].id` 关联 `answers[question_id]`，再按同一问题的 `options[].id` 解析 `selected` 中的选项 ID；空 `selected` 是合法未选择状态。`body.context` 中的 JSON 字符串仅作兼容回退，所有 payload 层级仍保留未知字段。
 
 单聊和指定发送人事件必须且只能选择一种目标身份：企业内部 `userId` 使用 `--user`，`openDingtalkId` 使用 `--open-dingtalk-id`。CLI 不会自动猜测或转换身份类型。
 

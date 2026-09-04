@@ -83,7 +83,7 @@ func TestCardActionEventCatalogDefinitionAndSchema(t *testing.T) {
 	}
 	properties, ok := doc.Schema["properties"].(map[string]any)
 	if !ok || len(properties) != 5 {
-		t.Fatalf("schema.properties = %#v, want five conservative fields", doc.Schema["properties"])
+		t.Fatalf("schema.properties = %#v, want five stable top-level fields", doc.Schema["properties"])
 	}
 	for _, name := range []string{"type", "event_id", "timestamp", "subscribe_id", "payload"} {
 		if _, ok := properties[name].(map[string]any); !ok {
@@ -93,6 +93,82 @@ func TestCardActionEventCatalogDefinitionAndSchema(t *testing.T) {
 	payload := properties["payload"].(map[string]any)
 	if payload["type"] != "object" || payload["additionalProperties"] != true {
 		t.Fatalf("schema.properties.payload = %#v, want open object", payload)
+	}
+	payloadProperties := payload["properties"].(map[string]any)
+	eventTime := payloadProperties["event_time"].(map[string]any)
+	if eventTime["type"] != "integer" || eventTime["format"] != "timestamp_ms" {
+		t.Fatalf("schema payload.event_time = %#v", eventTime)
+	}
+	body := payloadProperties["body"].(map[string]any)
+	if body["additionalProperties"] != true {
+		t.Fatalf("schema payload.body = %#v, want open object", body)
+	}
+	bodyProperties := body["properties"].(map[string]any)
+	for _, name := range []string{
+		"actionData", "bizInfoDTO", "context", "conversationContextDTO", "extension",
+		"operatorDTO", "spaceId", "spaceType", "triggerTimestamp",
+	} {
+		if _, ok := bodyProperties[name].(map[string]any); !ok {
+			t.Fatalf("schema payload.body.%s = %#v, want object", name, bodyProperties[name])
+		}
+	}
+
+	actionData := bodyProperties["actionData"].(map[string]any)
+	context := actionData["properties"].(map[string]any)["context"].(map[string]any)
+	if actionData["additionalProperties"] != true || context["additionalProperties"] != true {
+		t.Fatalf("schema actionData/context must remain open: %#v/%#v", actionData, context)
+	}
+	contextProperties := context["properties"].(map[string]any)
+	for _, name := range []string{"answers", "createUid", "orgId", "outcome", "questions", "sourceProjectionVersion", "sourceTurnId"} {
+		if _, ok := contextProperties[name].(map[string]any); !ok {
+			t.Fatalf("schema actionData.context.%s = %#v, want object", name, contextProperties[name])
+		}
+	}
+	if contextProperties["createUid"].(map[string]any)["type"] != "string" || contextProperties["orgId"].(map[string]any)["type"] != "string" {
+		t.Fatalf("schema context UID/org types = %#v/%#v", contextProperties["createUid"], contextProperties["orgId"])
+	}
+	answers := contextProperties["answers"].(map[string]any)
+	answerSchema, ok := answers["additionalProperties"].(map[string]any)
+	if !ok || answerSchema["type"] != "object" || answerSchema["additionalProperties"] != true {
+		t.Fatalf("schema context.answers = %#v, want typed dynamic values", answers)
+	}
+	answerProperties := answerSchema["properties"].(map[string]any)
+	selected := answerProperties["selected"].(map[string]any)
+	if selected["type"] != "array" || selected["items"].(map[string]any)["type"] != "string" {
+		t.Fatalf("schema answers.*.selected = %#v", selected)
+	}
+	questions := contextProperties["questions"].(map[string]any)
+	questionSchema := questions["items"].(map[string]any)
+	if questionSchema["additionalProperties"] != true {
+		t.Fatalf("schema questions[] = %#v, want open object", questionSchema)
+	}
+	questionProperties := questionSchema["properties"].(map[string]any)
+	for _, name := range []string{"allowCustom", "header", "id", "inputKind", "options", "prompt", "selection"} {
+		if _, ok := questionProperties[name].(map[string]any); !ok {
+			t.Fatalf("schema questions[].%s = %#v, want object", name, questionProperties[name])
+		}
+	}
+	optionSchema := questionProperties["options"].(map[string]any)["items"].(map[string]any)
+	if optionSchema["additionalProperties"] != true {
+		t.Fatalf("schema questions[].options[] = %#v, want open object", optionSchema)
+	}
+	optionProperties := optionSchema["properties"].(map[string]any)
+	for _, name := range []string{"description", "id", "label"} {
+		if optionProperties[name].(map[string]any)["type"] != "string" {
+			t.Fatalf("schema questions[].options[].%s = %#v, want string", name, optionProperties[name])
+		}
+	}
+	legacyContext := bodyProperties["context"].(map[string]any)["properties"].(map[string]any)
+	if legacyContext["answers"].(map[string]any)["type"] != "string" || legacyContext["questions"].(map[string]any)["type"] != "string" {
+		t.Fatalf("schema string context answers/questions = %#v/%#v", legacyContext["answers"], legacyContext["questions"])
+	}
+	extension := bodyProperties["extension"].(map[string]any)
+	if extension["additionalProperties"].(map[string]any)["type"] != "string" {
+		t.Fatalf("schema extension = %#v, want string values", extension)
+	}
+	operatorProperties := bodyProperties["operatorDTO"].(map[string]any)["properties"].(map[string]any)
+	if operatorProperties["uid"].(map[string]any)["type"] != "integer" {
+		t.Fatalf("schema operatorDTO.uid = %#v, want integer", operatorProperties["uid"])
 	}
 }
 
